@@ -806,10 +806,83 @@ class AssertsParser(ConcreteConditionParser):
         return []
 
 
+class GivenParser(ConcreteConditionParser):
+    def __init__(self, toplevel_parser: ConditionParser = None):
+        super().__init__(toplevel_parser)
+
+    @staticmethod
+    def is_string_literal(node: ast.AST) -> bool:
+        if sys.version_info >= (3, 8):
+            return (
+                    isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+            )
+        else:
+            return isinstance(node, ast.Expr) and isinstance(node.value, ast.Str)
+
+    @staticmethod
+    def check_decorator(fn: Callable) -> bool:
+        # TODO: Replace this naive solution later.
+        source = inspect.getsource(fn)
+        index = source.find("def ")
+        decorators = [
+            line.strip().split()[0]
+            for line in source[:index].strip().splitlines()
+            if line.strip()[0] == "@"
+        ]
+        return "given" in decorators
+
+    def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
+        fn_and_sig = ctxfn.get_callable()
+        if fn_and_sig is None:
+            return None
+        (fn, sig) = fn_and_sig
+        # TODO replace this guard with package-level configuration?
+        if (
+                getattr(fn, "__module__", False)
+                and fn.__module__.startswith("crosshair.")
+                and not fn.__module__.endswith("_test")
+        ):
+            return None
+
+        try:
+            decorator = GivenParser.check_decorator(fn)
+        except OSError:
+            return None
+        if not decorator:
+            return None
+
+        filename, first_line, _lines = sourcelines(fn)
+
+        @functools.wraps(fn)
+        def wrappedfn(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except AssertionError as e:
+                raise
+
+        post = [ConditionExpr(lambda _: True, filename, first_line, "")]
+        return Conditions(
+            wrappedfn,
+            fn,
+            [],  # (pre)
+            post,
+            raises=frozenset(parse_sphinx_raises(fn)),
+            sig=sig,
+            mutable_args=None,
+            fn_syntax_messages=[],
+        )
+
+    def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
+        return []
+
+
 _PARSER_MAP = {
     AnalysisKind.PEP316: Pep316Parser,
     AnalysisKind.icontract: IcontractParser,
     AnalysisKind.asserts: AssertsParser,
+    AnalysisKind.given: GivenParser,
 }
 
 
