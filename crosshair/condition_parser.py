@@ -823,7 +823,7 @@ class GivenParser(ConcreteConditionParser):
 
     @staticmethod
     def check_decorator(fn: Callable) -> bool:
-        # TODO: Replace this naive solution later.
+        # TODO: FIX THIS.
         source = inspect.getsource(fn)
         index = source.find("def ")
         decorators = [
@@ -849,12 +849,12 @@ class GivenParser(ConcreteConditionParser):
         ):
             return None
 
-        # try:
-        #     decorator = GivenParser.check_decorator(fn)
-        # except OSError:
-        #     return None
-        # if not decorator:
-        #     return None
+        try:
+            decorator = GivenParser.check_decorator(fn)
+        except OSError:
+            return None
+        if not decorator:
+            return None
 
         filename, first_line, _lines = sourcelines(fn)
 
