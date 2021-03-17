@@ -831,7 +831,10 @@ class GivenParser(ConcreteConditionParser):
             for line in source[:index].strip().splitlines()
             if line.strip()[0] == "@"
         ]
-        return "given" in decorators
+        for decorator in decorators:
+            if "given" in decorator:
+                return True
+        return False
 
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
         fn_and_sig = ctxfn.get_callable()
@@ -846,12 +849,12 @@ class GivenParser(ConcreteConditionParser):
         ):
             return None
 
-        try:
-            decorator = GivenParser.check_decorator(fn)
-        except OSError:
-            return None
-        if not decorator:
-            return None
+        # try:
+        #     decorator = GivenParser.check_decorator(fn)
+        # except OSError:
+        #     return None
+        # if not decorator:
+        #     return None
 
         filename, first_line, _lines = sourcelines(fn)
 
@@ -860,6 +863,9 @@ class GivenParser(ConcreteConditionParser):
             try:
                 return fn(*a, **kw)
             except AssertionError as e:
+                _, lineno = frame_summary_for_fn(
+                    fn, traceback.extract_tb(e.__traceback__)
+                )
                 raise
 
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]

@@ -47,6 +47,7 @@ from crosshair.condition_parser import CompositeConditionParser
 from crosshair.condition_parser import ConditionParser
 from crosshair.condition_parser import Pep316Parser
 from crosshair.condition_parser import IcontractParser
+from crosshair.condition_parser import GivenParser
 from crosshair.condition_parser import resolve_signature
 from crosshair.condition_parser import Conditions
 from crosshair.condition_parser import ConditionExpr
@@ -1441,15 +1442,15 @@ def shortcircuit(
 
     return retval
 
-def given(Strategy):
-    """A decorator for checking what input to generate.
-    """
-    def given_decorator(func):
-        def wrapper():
-            setattr(func, "isGiven", True)
-            # func()
-
-        functools.update_wrapper(wrapper, func)
-        return wrapper
-
-    return given_decorator
+# def given(Strategy):
+#     """A decorator for checking what input to generate.
+#     """
+#     def given_decorator(func):
+#         def wrapper():
+#             setattr(func, "isGiven", True)
+#             # func()
+#
+#         functools.update_wrapper(wrapper, func)
+#         return wrapper
+#
+#     return given_decorator
