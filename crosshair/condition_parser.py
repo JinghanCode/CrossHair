@@ -31,6 +31,7 @@ from crosshair.util import memo
 from crosshair.util import sourcelines
 from crosshair.util import DynamicScopeVar
 
+import hypothesis.core
 import hypothesis.errors
 
 
@@ -810,8 +811,11 @@ class AssertsParser(ConcreteConditionParser):
 
 class HypothesisParser(ConcreteConditionParser):
     @staticmethod
-    def check_fn_hypothesis_test(fn: Callable) -> bool:
-        return hasattr(fn, "hypothesis")
+    def get_hypothesis_test_handle(fn: Callable) -> hypothesis.core.HypothesisHandle:
+        if hasattr(fn, "hypothesis"):
+            return fn.hypothesis
+        else:
+            return None
 
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
         fn_and_sig = ctxfn.get_callable()
@@ -827,12 +831,12 @@ class HypothesisParser(ConcreteConditionParser):
             return None
 
         try:
-            is_hypothesis_test = HypothesisParser.check_fn_hypothesis_test(fn)
+            hypothesis_test_handle = HypothesisParser.get_hypothesis_test_handle(fn)
         except OSError:
             return None
-        if not is_hypothesis_test:
+        if not hypothesis_test_handle:
             return None
-
+        
         filename, first_line, _lines = sourcelines(fn)
 
         @functools.wraps(fn)
