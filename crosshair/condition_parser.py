@@ -31,6 +31,8 @@ from crosshair.util import memo
 from crosshair.util import sourcelines
 from crosshair.util import DynamicScopeVar
 
+import hypothesis.errors
+
 
 def strip_comment_line(line: str) -> str:
     line = line.strip()
@@ -806,35 +808,10 @@ class AssertsParser(ConcreteConditionParser):
         return []
 
 
-class GivenParser(ConcreteConditionParser):
-    def __init__(self, toplevel_parser: ConditionParser = None):
-        super().__init__(toplevel_parser)
-
+class HypothesisParser(ConcreteConditionParser):
     @staticmethod
-    def is_string_literal(node: ast.AST) -> bool:
-        if sys.version_info >= (3, 8):
-            return (
-                    isinstance(node, ast.Expr)
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)
-            )
-        else:
-            return isinstance(node, ast.Expr) and isinstance(node.value, ast.Str)
-
-    @staticmethod
-    def check_decorator(fn: Callable) -> bool:
-        # TODO: FIX THIS.
-        source = inspect.getsource(fn)
-        index = source.find("def ")
-        decorators = [
-            line.strip().split()[0]
-            for line in source[:index].strip().splitlines()
-            if line.strip()[0] == "@"
-        ]
-        for decorator in decorators:
-            if "given" in decorator:
-                return True
-        return False
+    def check_fn_hypothesis_test(fn: Callable) -> bool:
+        return hasattr(fn, "hypothesis")
 
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
         fn_and_sig = ctxfn.get_callable()
@@ -850,10 +827,10 @@ class GivenParser(ConcreteConditionParser):
             return None
 
         try:
-            decorator = GivenParser.check_decorator(fn)
+            is_hypothesis_test = HypothesisParser.check_fn_hypothesis_test(fn)
         except OSError:
             return None
-        if not decorator:
+        if not is_hypothesis_test:
             return None
 
         filename, first_line, _lines = sourcelines(fn)
@@ -874,7 +851,7 @@ class GivenParser(ConcreteConditionParser):
             fn,
             [],  # (pre)
             post,
-            raises=frozenset(parse_sphinx_raises(fn)),
+            raises=frozenset([hypothesis.errors.UnsatisfiedAssumption]),
             sig=sig,
             mutable_args=None,
             fn_syntax_messages=[],
@@ -888,7 +865,7 @@ _PARSER_MAP = {
     AnalysisKind.PEP316: Pep316Parser,
     AnalysisKind.icontract: IcontractParser,
     AnalysisKind.asserts: AssertsParser,
-    AnalysisKind.given: GivenParser,
+    AnalysisKind.hypothesis: HypothesisParser,
 }
 
 

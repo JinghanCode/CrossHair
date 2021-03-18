@@ -12,8 +12,7 @@ class AnalysisKind(enum.Enum):
     PEP316 = "PEP316"
     icontract = "icontract"
     asserts = "asserts"
-    given = "given"
-    # hypothesis = "hypothesis"
+    hypothesis = "hypothesis"
     def __str__(self):
         return self.value
 
@@ -166,6 +165,6 @@ DEFAULT_OPTIONS = AnalysisOptions(
         AnalysisKind.PEP316,
         AnalysisKind.icontract,
         AnalysisKind.asserts,
-        AnalysisKind.given
+        AnalysisKind.hypothesis
     ),
 )

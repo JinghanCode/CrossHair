@@ -47,7 +47,7 @@ from crosshair.condition_parser import CompositeConditionParser
 from crosshair.condition_parser import ConditionParser
 from crosshair.condition_parser import Pep316Parser
 from crosshair.condition_parser import IcontractParser
-from crosshair.condition_parser import GivenParser
+from crosshair.condition_parser import HypothesisParser
 from crosshair.condition_parser import resolve_signature
 from crosshair.condition_parser import Conditions
 from crosshair.condition_parser import ConditionExpr
