@@ -836,7 +836,15 @@ class HypothesisParser(ConcreteConditionParser):
             return None
         if not hypothesis_test_handle:
             return None
-        
+
+        inner_test = hypothesis_test_handle.inner_test
+        given_kwargs = hypothesis_test_handle._given_kwargs
+
+        for variable, strategy in given_kwargs.items():
+            lower_bound = strategy.wrapped_strategy.start
+            upper_bound = strategy.wrapped_strategy.end
+
+
         filename, first_line, _lines = sourcelines(fn)
 
         @functools.wraps(fn)
