@@ -1441,16 +1441,3 @@ def shortcircuit(
     space.defer_assumption("Reconcile short circuit", reconciled)
 
     return retval
-
-# def given(Strategy):
-#     """A decorator for checking what input to generate.
-#     """
-#     def given_decorator(func):
-#         def wrapper():
-#             setattr(func, "isGiven", True)
-#             # func()
-#
-#         functools.update_wrapper(wrapper, func)
-#         return wrapper
-#
-#     return given_decorator

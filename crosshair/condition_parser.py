@@ -548,6 +548,7 @@ class Pep316Parser(ConcreteConditionParser):
             post_conditions.append(
                 condition_from_source_text(filename, line_num, expr, fn_globals(fn))
             )
+            # print(condition_from_source_text(filename, line_num, expr, fn_globals(fn)))
         return Conditions(
             fn,
             fn,
@@ -810,12 +811,6 @@ class AssertsParser(ConcreteConditionParser):
 
 
 class HypothesisParser(ConcreteConditionParser):
-    @staticmethod
-    def get_hypothesis_test_handle(fn: Callable) -> hypothesis.core.HypothesisHandle:
-        if hasattr(fn, "hypothesis"):
-            return fn.hypothesis
-        else:
-            return None
 
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
         fn_and_sig = ctxfn.get_callable()
@@ -831,38 +826,46 @@ class HypothesisParser(ConcreteConditionParser):
             return None
 
         try:
-            hypothesis_test_handle = HypothesisParser.get_hypothesis_test_handle(fn)
-        except OSError:
-            return None
-        if not hypothesis_test_handle:
+            inner_test = fn.hypothesis.inner_test
+        except AttributeError:
             return None
 
-        inner_test = hypothesis_test_handle.inner_test
-        given_kwargs = hypothesis_test_handle._given_kwargs
+        given_kwargs = fn.hypothesis._given_kwargs
+        filename, first_line, _lines = sourcelines(fn)
+
+        pre: List[ConditionExpr] = []
+        post = [ConditionExpr(lambda _: True, filename, first_line, "")]
 
         for variable, strategy in given_kwargs.items():
             lower_bound = strategy.wrapped_strategy.start
             upper_bound = strategy.wrapped_strategy.end
 
+            if lower_bound and upper_bound:
+                expr = f'{lower_bound} <= {variable} <= {upper_bound}'
+                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
+                                         filename=filename,
+                                         line=first_line,
+                                         expr_source=_lines[0]))
 
-        filename, first_line, _lines = sourcelines(fn)
+            elif lower_bound:
+                expr = f'{lower_bound} <= {variable}'
+                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
+                                         filename=filename,
+                                         line=first_line,
+                                         expr_source=_lines[0]))
 
-        @functools.wraps(fn)
-        def wrappedfn(*a, **kw):
-            try:
-                return fn(*a, **kw)
-            except AssertionError as e:
-                _, lineno = frame_summary_for_fn(
-                    fn, traceback.extract_tb(e.__traceback__)
-                )
-                raise
+            elif upper_bound:
+                expr = f'{variable} <= {upper_bound}'
+                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
+                                         filename=filename,
+                                         line=first_line,
+                                         expr_source=_lines[0]))
 
-        post = [ConditionExpr(lambda _: True, filename, first_line, "")]
         return Conditions(
-            wrappedfn,
-            fn,
-            [],  # (pre)
-            post,
+            fn=fn,
+            src_fn=fn,
+            pre=pre,  # (pre)
+            post=post,
             raises=frozenset([hypothesis.errors.UnsatisfiedAssumption]),
             sig=sig,
             mutable_args=None,
