@@ -149,7 +149,7 @@ class Conditions:
 
     sig: inspect.Signature
     """
-    The signature of the funtion. Argument and return type
+    The signature of the function. Argument and return type
     annotations should be resolved to real python types when possible.
     """
 
@@ -816,7 +816,8 @@ class HypothesisParser(ConcreteConditionParser):
         fn_and_sig = ctxfn.get_callable()
         if fn_and_sig is None:
             return None
-        (fn, sig) = fn_and_sig
+        (fn, _) = fn_and_sig
+
         # TODO replace this guard with package-level configuration?
         if (
                 getattr(fn, "__module__", False)
@@ -827,6 +828,7 @@ class HypothesisParser(ConcreteConditionParser):
 
         try:
             inner_test = fn.hypothesis.inner_test
+            inner_test_sig = inspect.signature(inner_test)
         except AttributeError:
             return None
 
@@ -875,7 +877,7 @@ class HypothesisParser(ConcreteConditionParser):
             pre=pre,  # (pre)
             post=post,
             raises=frozenset([hypothesis.errors.UnsatisfiedAssumption]),
-            sig=sig,
+            sig=inner_test_sig,
             mutable_args=None,
             fn_syntax_messages=[],
         )
