@@ -26,7 +26,7 @@ def test_integers_bounded_alternate(x):
 def zac_test(x):
     assert 1 <= x <= 2
 
-# This should fail with x = 5, y = -5
+# This should fail with x + y = 0
 @given(st.integers(min_value=1, max_value=5), st.integers(min_value=-100000))
 def test_multiple_strategies(x, y):
      1 / (x + y)
