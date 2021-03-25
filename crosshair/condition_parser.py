@@ -521,7 +521,6 @@ class Pep316Parser(ConcreteConditionParser):
             pre.append(
                 condition_from_source_text(filename, line_num, expr, fn_globals(fn))
             )
-            print(condition_from_source_text(filename, line_num, expr, fn_globals(fn)))
         for line_num, expr in parse.sections["raises"]:
             if "#" in expr:
                 expr = expr.split("#")[0]
@@ -548,7 +547,6 @@ class Pep316Parser(ConcreteConditionParser):
             post_conditions.append(
                 condition_from_source_text(filename, line_num, expr, fn_globals(fn))
             )
-            # print(condition_from_source_text(filename, line_num, expr, fn_globals(fn)))
         return Conditions(
             fn,
             fn,
