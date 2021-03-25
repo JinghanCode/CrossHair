@@ -841,35 +841,22 @@ class HypothesisParser(ConcreteConditionParser):
         for variable, strategy in given_kwargs.items():
             lower_bound = strategy.wrapped_strategy.start
             upper_bound = strategy.wrapped_strategy.end
+            expr = f'isinstance({variable}, int)'
 
-            if lower_bound and upper_bound:
+            if lower_bound is not None and upper_bound is not None:
                 expr = f'{lower_bound} <= {variable} <= {upper_bound}'
-                condition_expr = condition_from_source_text(filename=filename,
-                                                            line=first_line,
-                                                            expr_source=expr,
-                                                            namespace=fn_globals(fn))
-                print(condition_expr)
-                pre.append(condition_expr)
 
+            elif lower_bound is not None:
+                expr = f'{lower_bound} <= {variable}'
 
-                # pre.append(ConditionExpr(evaluate=evaluatefn,
-                #                          filename=filename,
-                #                          line=first_line,
-                #                          expr_source=_lines[0]))
+            elif upper_bound is not None:
+                expr = f'{variable} <= {upper_bound}'
 
-            # elif lower_bound:
-            #     expr = f'{lower_bound} <= {variable}'
-            #     pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
-            #                              filename=filename,
-            #                              line=first_line,
-            #                              expr_source=_lines[0]))
-            #
-            # elif upper_bound:
-            #     expr = f'{variable} <= {upper_bound}'
-            #     pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
-            #                              filename=filename,
-            #                              line=first_line,
-            #                              expr_source=_lines[0]))
+            condition_expr = condition_from_source_text(filename=filename,
+                                                        line=first_line,
+                                                        expr_source=expr,
+                                                        namespace=fn_globals(inner_test))
+            pre.append(condition_expr)
 
         return Conditions(
             fn=inner_test,
