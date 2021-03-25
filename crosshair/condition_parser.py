@@ -31,7 +31,7 @@ from crosshair.util import memo
 from crosshair.util import sourcelines
 from crosshair.util import DynamicScopeVar
 
-import hypothesis.core
+# import hypothesis.core
 import hypothesis.errors
 
 
@@ -458,7 +458,6 @@ def condition_from_source_text(
     evaluate, compile_err = None, None
     try:
         compiled = compile_expr(expr_source)
-
         def evaluatefn(bindings: Mapping[str, object]) -> bool:
             return eval(compiled, {**namespace, **bindings})
 
@@ -522,6 +521,7 @@ class Pep316Parser(ConcreteConditionParser):
             pre.append(
                 condition_from_source_text(filename, line_num, expr, fn_globals(fn))
             )
+            print(condition_from_source_text(filename, line_num, expr, fn_globals(fn)))
         for line_num, expr in parse.sections["raises"]:
             if "#" in expr:
                 expr = expr.split("#")[0]
@@ -842,28 +842,36 @@ class HypothesisParser(ConcreteConditionParser):
 
             if lower_bound and upper_bound:
                 expr = f'{lower_bound} <= {variable} <= {upper_bound}'
-                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
-                                         filename=filename,
-                                         line=first_line,
-                                         expr_source=_lines[0]))
+                condition_expr = condition_from_source_text(filename=filename,
+                                                            line=first_line,
+                                                            expr_source=expr,
+                                                            namespace=fn_globals(fn))
+                print(condition_expr)
+                pre.append(condition_expr)
 
-            elif lower_bound:
-                expr = f'{lower_bound} <= {variable}'
-                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
-                                         filename=filename,
-                                         line=first_line,
-                                         expr_source=_lines[0]))
 
-            elif upper_bound:
-                expr = f'{variable} <= {upper_bound}'
-                pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
-                                         filename=filename,
-                                         line=first_line,
-                                         expr_source=_lines[0]))
+                # pre.append(ConditionExpr(evaluate=evaluatefn,
+                #                          filename=filename,
+                #                          line=first_line,
+                #                          expr_source=_lines[0]))
+
+            # elif lower_bound:
+            #     expr = f'{lower_bound} <= {variable}'
+            #     pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
+            #                              filename=filename,
+            #                              line=first_line,
+            #                              expr_source=_lines[0]))
+            #
+            # elif upper_bound:
+            #     expr = f'{variable} <= {upper_bound}'
+            #     pre.append(ConditionExpr(evaluate=lambda bindings: eval(compile_expr(expr), {**bindings}),
+            #                              filename=filename,
+            #                              line=first_line,
+            #                              expr_source=_lines[0]))
 
         return Conditions(
-            fn=fn,
-            src_fn=fn,
+            fn=inner_test,
+            src_fn=inner_test,
             pre=pre,  # (pre)
             post=post,
             raises=frozenset([hypothesis.errors.UnsatisfiedAssumption]),
@@ -879,8 +887,8 @@ class HypothesisParser(ConcreteConditionParser):
 _PARSER_MAP = {
     AnalysisKind.PEP316: Pep316Parser,
     AnalysisKind.icontract: IcontractParser,
-    AnalysisKind.asserts: AssertsParser,
     AnalysisKind.hypothesis: HypothesisParser,
+    AnalysisKind.asserts: AssertsParser
 }
 
 
