@@ -32,3 +32,10 @@ def test_multiple_strategies(x, y):
      1 / (x + y)
 
 
+@given(st.one_of(st.integers(1, 5), st.integers(9, 10)))
+def test_integers_union(x):
+    assert x >= 1
+    assert x <= 10
+    assert x == 6 # Should fail here.
+
+

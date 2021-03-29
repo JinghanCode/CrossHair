@@ -19,6 +19,12 @@ try:
 except ModuleNotFoundError:
     icontract = None  # type: ignore
 
+try:
+    import hypothesis
+    from hypothesis.strategies import SearchStrategy
+except ModuleNotFoundError:
+    hypothesis = None
+
 from crosshair.fnutil import fn_globals
 from crosshair.fnutil import resolve_signature
 from crosshair.fnutil import set_first_arg_type
@@ -837,24 +843,25 @@ class HypothesisParser(ConcreteConditionParser):
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]
 
         for variable, strategy in given_kwargs.items():
-            lower_bound = strategy.wrapped_strategy.start
-            upper_bound = strategy.wrapped_strategy.end
-            expr = f'isinstance({variable}, int)'
-
-            if lower_bound is not None and upper_bound is not None:
-                expr = f'{lower_bound} <= {variable} <= {upper_bound}'
-
-            elif lower_bound is not None:
-                expr = f'{lower_bound} <= {variable}'
-
-            elif upper_bound is not None:
-                expr = f'{variable} <= {upper_bound}'
-
-            condition_expr = condition_from_source_text(filename=filename,
-                                                        line=first_line,
-                                                        expr_source=expr,
-                                                        namespace=fn_globals(inner_test))
-            pre.append(condition_expr)
+            expr = self.get_expr_from_strategy(variable, strategy)
+            #     lower_bound = strategy.wrapped_strategy.start
+            #     upper_bound = strategy.wrapped_strategy.end
+            #     expr = f'isinstance({variable}, int)'
+            #
+            #     if lower_bound is not None and upper_bound is not None:
+            #         expr = f'{lower_bound} <= {variable} <= {upper_bound}'
+            #
+            #     elif lower_bound is not None:
+            #         expr = f'{lower_bound} <= {variable}'
+            #
+            #     elif upper_bound is not None:
+            #         expr = f'{variable} <= {upper_bound}'
+            if expr is not None:
+                condition_expr = condition_from_source_text(filename=filename,
+                                                            line=first_line,
+                                                            expr_source=expr,
+                                                            namespace=fn_globals(inner_test))
+                pre.append(condition_expr)
 
         return Conditions(
             fn=inner_test,
@@ -866,6 +873,34 @@ class HypothesisParser(ConcreteConditionParser):
             mutable_args=None,
             fn_syntax_messages=[],
         )
+
+    def get_expr_from_strategy(self, variable, strategy: SearchStrategy) -> Optional[str]:
+        if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
+            strategy_list = strategy.original_strategies
+            expr = f'{self.get_expr_from_strategy(variable, strategy_list[0])}'
+            for arg_strategy in strategy_list[1:]:
+                expr += f' or {self.get_expr_from_strategy(variable, arg_strategy)}'
+            return expr
+
+        if str(strategy)[:8] == "integers":
+            lower_bound = strategy.wrapped_strategy.start
+            upper_bound = strategy.wrapped_strategy.end
+            expr = f'isinstance({variable}, int)'
+
+            if lower_bound is not None and upper_bound is not None:
+                expr = f'({lower_bound} <= {variable} <= {upper_bound})'
+
+            elif lower_bound is not None:
+                expr = f'({lower_bound} <= {variable})'
+
+            elif upper_bound is not None:
+                expr = f'({variable} <= {upper_bound})'
+
+            return expr
+
+        return None
+
+
 
     def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
         return []
