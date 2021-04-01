@@ -847,12 +847,22 @@ class HypothesisParser(ConcreteConditionParser):
             if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
                 mapped_strategy = strategy.mapped_strategy
                 mapping_function = strategy.pack
-                mapped_expr = self.get_expr_from_strategy(variable, mapped_strategy, mapping_function)
+                namespace["f"] = mapping_function
+                map_var = str(variable)+"_"
+                expr = f'f({map_var}) == {variable}'
+                condition_expr = condition_from_source_text(filename=filename,
+                                                            line=first_line,
+                                                            expr_source=expr,
+                                                            namespace=namespace)
+                pre.append(condition_expr)
+
+
+                mapped_expr = self.get_expr_from_strategy(map_var, mapped_strategy)
                 if mapped_expr is not None:
                     mapped_condition_expr = condition_from_source_text(filename=filename,
-                                                                line=first_line,
-                                                                expr_source=mapped_expr,
-                                                                namespace=namespace)
+                                                                       line=first_line,
+                                                                       expr_source=mapped_expr,
+                                                                       namespace=namespace)
                     pre.append(mapped_condition_expr)
 
             else:
@@ -895,6 +905,7 @@ class HypothesisParser(ConcreteConditionParser):
             if mapping_function is not None:
                 lower_bound = mapping_function(lower_bound)
                 upper_bound = mapping_function(upper_bound)
+
             expr = f'isinstance({variable}, int)'
 
             if lower_bound is not None and upper_bound is not None:
