@@ -838,30 +838,34 @@ class HypothesisParser(ConcreteConditionParser):
 
         given_kwargs = fn.hypothesis._given_kwargs
         filename, first_line, _lines = sourcelines(fn)
+        namespace = fn_globals(inner_test)
 
         pre: List[ConditionExpr] = []
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]
 
         for variable, strategy in given_kwargs.items():
-            expr = self.get_expr_from_strategy(variable, strategy)
-            #     lower_bound = strategy.wrapped_strategy.start
-            #     upper_bound = strategy.wrapped_strategy.end
-            #     expr = f'isinstance({variable}, int)'
-            #
-            #     if lower_bound is not None and upper_bound is not None:
-            #         expr = f'{lower_bound} <= {variable} <= {upper_bound}'
-            #
-            #     elif lower_bound is not None:
-            #         expr = f'{lower_bound} <= {variable}'
-            #
-            #     elif upper_bound is not None:
-            #         expr = f'{variable} <= {upper_bound}'
-            if expr is not None:
-                condition_expr = condition_from_source_text(filename=filename,
-                                                            line=first_line,
-                                                            expr_source=expr,
-                                                            namespace=fn_globals(inner_test))
-                pre.append(condition_expr)
+            if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
+                mapped_strategy = strategy.mapped_strategy
+                mapping_function = strategy.pack
+                mapped_expr = self.get_expr_from_strategy(variable, mapped_strategy, mapping_function)
+                if mapped_expr is not None:
+                    mapped_condition_expr = condition_from_source_text(filename=filename,
+                                                                line=first_line,
+                                                                expr_source=mapped_expr,
+                                                                namespace=namespace)
+                    pre.append(mapped_condition_expr)
+
+            else:
+                expr = self.get_expr_from_strategy(variable, strategy)
+                if expr is not None:
+                    condition_expr = condition_from_source_text(filename=filename,
+                                                                line=first_line,
+                                                                expr_source=expr,
+                                                                namespace=namespace)
+                    pre.append(condition_expr)
+
+        for cond in pre:
+            print(cond.expr_source)
 
         return Conditions(
             fn=inner_test,
@@ -874,7 +878,10 @@ class HypothesisParser(ConcreteConditionParser):
             fn_syntax_messages=[],
         )
 
-    def get_expr_from_strategy(self, variable, strategy: SearchStrategy) -> Optional[str]:
+    def get_expr_from_strategy(self,
+                               variable,
+                               strategy: SearchStrategy,
+                               mapping_function: Callable = None) -> Optional[str]:
         if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
             strategy_list = strategy.original_strategies
             expr = f'{self.get_expr_from_strategy(variable, strategy_list[0])}'
@@ -885,6 +892,9 @@ class HypothesisParser(ConcreteConditionParser):
         if str(strategy)[:8] == "integers":
             lower_bound = strategy.wrapped_strategy.start
             upper_bound = strategy.wrapped_strategy.end
+            if mapping_function is not None:
+                lower_bound = mapping_function(lower_bound)
+                upper_bound = mapping_function(upper_bound)
             expr = f'isinstance({variable}, int)'
 
             if lower_bound is not None and upper_bound is not None:
@@ -897,6 +907,13 @@ class HypothesisParser(ConcreteConditionParser):
                 expr = f'({variable} <= {upper_bound})'
 
             return expr
+
+        # if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
+        #     mapped_strategy = strategy.mapped_strategy
+        #     mapping_function = strategy.pack
+        #
+
+
 
         return None
 
