@@ -839,7 +839,7 @@ class HypothesisParser(ConcreteConditionParser):
         given_kwargs = fn.hypothesis._given_kwargs
         filename, first_line, _lines = sourcelines(fn)
         namespace = fn_globals(inner_test)
-        mapped_test = None
+        mapping_function = None
 
         pre: List[ConditionExpr] = []
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]
@@ -848,15 +848,9 @@ class HypothesisParser(ConcreteConditionParser):
             if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
                 mapped_strategy = strategy.mapped_strategy
                 mapping_function = strategy.pack
-                mapped_test = lambda x: inner_test(mapping_function(x))
-                # namespace["f"] = mapping_function
-                # map_var = str(variable)+"_"
-                # expr = f'f({map_var}) == {variable}'
-                # condition_expr = condition_from_source_text(filename=filename,
-                #                                             line=first_line,
-                #                                             expr_source=expr,
-                #                                             namespace=namespace)
-                # pre.append(condition_expr)
+
+                def mapped_test(x):
+                    return inner_test(mapping_function(x))
 
                 mapped_expr = self.get_expr_from_strategy(variable, mapped_strategy, mapping_function)
                 if mapped_expr is not None:
@@ -908,10 +902,6 @@ class HypothesisParser(ConcreteConditionParser):
         if str(strategy)[:8] == "integers":
             lower_bound = strategy.wrapped_strategy.start
             upper_bound = strategy.wrapped_strategy.end
-            # if mapping_function is not None:
-            #     variable = f'f({variable})'
-            #     lower_bound = mapping_function(lower_bound)
-            #     upper_bound = mapping_function(upper_bound)
 
             expr = f'isinstance({variable}, int)'
 
