@@ -16,3 +16,11 @@ def zac_test(x):
 def test_multiple_strategies(x, y):
     1 / (x + y)
 
+def some_func(x):
+    return x * 2
+
+
+@given(st.integers(2, 2).map(some_func))
+def test_map(x):
+    assert x == 4
+
