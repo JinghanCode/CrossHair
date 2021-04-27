@@ -9,7 +9,7 @@ import sys
 import textwrap
 import traceback
 import types
-import typing
+import copy
 from dataclasses import dataclass
 from dataclasses import replace
 from typing import *
@@ -462,6 +462,8 @@ def condition_from_source_text(
     addl_context: str = "",
 ) -> ConditionExpr:
     evaluate, compile_err = None, None
+    # expr_source = f'{expr_source} and (x == 2 * z)'
+    # print(expr_source)
     try:
         compiled = compile_expr(expr_source)
         def evaluatefn(bindings: Mapping[str, object]) -> bool:
@@ -839,24 +841,19 @@ class HypothesisParser(ConcreteConditionParser):
         given_kwargs = fn.hypothesis._given_kwargs
         filename, first_line, _lines = sourcelines(fn)
         namespace = fn_globals(inner_test)
-        mapping_function = None
 
         pre: List[ConditionExpr] = []
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]
 
-        for variable, strategy in given_kwargs.items():
-
+        for variable, s in given_kwargs.items():
+            strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(s)
             if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
                 mapped_strategy = strategy.mapped_strategy
                 mapping_function = strategy.pack
+                # mapped_strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(strategy.mapped_strategy)
+                # namespace["f"] = mapping_function
 
-                namespace["f"] = mapping_function
-                namespace["y"] = 0
-
-                def mapped_test(x):
-                    return inner_test(mapping_function(x))
-
-                mapped_expr = self.get_expr_from_strategy("x", mapped_strategy, mapping_function)
+                mapped_expr = self.get_expr_from_strategy(variable, mapped_strategy, mapping_function)
                 if mapped_expr is not None:
                     mapped_condition_expr = condition_from_source_text(filename=filename,
                                                                        line=first_line,
@@ -872,21 +869,17 @@ class HypothesisParser(ConcreteConditionParser):
                                                                 expr_source=expr,
                                                                 namespace=namespace)
                     pre.append(condition_expr)
-
-        condition_expr = condition_from_source_text(filename=filename,
-                                                    line=first_line,
-                                                    expr_source=f'f(y) == x',
-                                                    namespace=namespace)
-        pre.append(condition_expr)
-
-        for cond in pre:
-            print(cond.expr_source)
-
-        if mapped_test is not None:
-            fn = mapped_test
-        else:
-            fn = inner_test
-
+        #
+        # condition_expr = condition_from_source_text(filename=filename,
+        #                                             line=first_line,
+        #                                             expr_source="x == 2 * y",
+        #                                             namespace=namespace)
+        # pre.append(condition_expr)
+        #
+        # if mapped_test is not None:
+        #     fn = mapped_test
+        # else:
+        #     fn = inner_test
         return Conditions(
             fn=inner_test,
             src_fn=inner_test,
@@ -898,11 +891,24 @@ class HypothesisParser(ConcreteConditionParser):
             fn_syntax_messages=[],
         )
 
-    def get_expr_from_strategy(self,
+    def get_cond_from_strategy(self,
                                variable,
                                strategy: SearchStrategy,
-                               test_fn: Callable = None,
-                               pre: List[ConditionExpr] = None) -> Optional[str]:
+                               mapping_function: Optional[Callable],
+                               filename,
+                               first_line,
+                               namespace) -> List[ConditionExpr]:
+        conditions = []
+
+        if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
+            mapped_strategy = strategy.mapped_strategy
+            cur_mapping_function = strategy.pack
+
+            if mapping_function is not None:
+                mapping_function = compose(cur_mapping_function, mapping_function)
+
+            mapped_condition = self.get_cond_from_strategy(variable, mapped_strategy, mapping_function)
+            conditions.append(mapped_condition)
 
         if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
             strategy_list = strategy.original_strategies
@@ -911,9 +917,19 @@ class HypothesisParser(ConcreteConditionParser):
                 expr += f' or {self.get_expr_from_strategy(variable, arg_strategy)}'
             return expr
 
-        if str(strategy)[:8] == "integers":
-            lower_bound = strategy.wrapped_strategy.start
-            upper_bound = strategy.wrapped_strategy.end
+        if isinstance(strategy, hypothesis.strategies._internal.numbers.IntegersStrategy):
+            lower_bound = strategy.start
+            upper_bound = strategy.end
+
+            if mapping_function is not None:
+                lower_bound = mapping_function(lower_bound)
+                upper_bound = mapping_function(upper_bound)
+                expr_for_map = f'{variable} == {mapping_function.__name__}({variable}_)'
+                condition_expr_for_map = condition_from_source_text(filename=filename,
+                                                                    line=first_line,
+                                                                    expr_source=expr_for_map,
+                                                                    namespace=namespace)
+                conditions.append(condition_expr_for_map)
 
             expr = f'isinstance({variable}, int)'
 
@@ -926,26 +942,13 @@ class HypothesisParser(ConcreteConditionParser):
             elif upper_bound is not None:
                 expr = f'({variable} <= {upper_bound})'
 
-            return expr
+            condition_expr = condition_from_source_text(filename=filename,
+                                                        line=first_line,
+                                                        expr_source=expr,
+                                                        namespace=namespace)
+            conditions.append(condition_expr)
 
-        # if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
-        #     mapped_strategy = strategy.mapped_strategy
-        #     mapping_function = strategy.pack
-        #
-        #     def mapped_test(x):
-        #         return test_fn(mapping_function(x))
-        #
-        #     mapped_expr = self.get_expr_from_strategy(variable, mapped_strategy, mapping_function)
-        #     if mapped_expr is not None:
-        #         mapped_condition_expr = condition_from_source_text(filename=filename,
-        #                                                            line=first_line,
-        #                                                            expr_source=mapped_expr,
-        #                                                            namespace=namespace)
-        #         pre.append(mapped_condition_expr)
-
-
-
-        return None
+        return conditions
 
 
 
@@ -982,3 +985,37 @@ def condition_parser(
 
 def get_current_parser() -> ConditionParser:
     return _CALLTREE_PARSER.get()
+
+# Helper
+def compose(g, f):
+    def h(*args, **kwargs):
+        return g(f(*args, **kwargs))
+    h.__name__ = f'{g.__name__}_composite_{f.__name__}'
+    return h
+
+def condition_from_expr(
+        filename: str,
+        line: int,
+        expr_source: str,
+        namespace: Dict[str, object],
+) -> ConditionExpr:
+    evaluate, compile_err = None, None
+    # expr_source = f'{expr_source} and (x == 2 * z)'
+    # print(expr_source)
+    try:
+        compiled = compile_expr(expr_source)
+        def evaluatefn(bindings: Mapping[str, object]) -> bool:
+            return eval(compiled, {**namespace, **bindings})
+
+        evaluate = evaluatefn
+    except:
+        e = sys.exc_info()[1]
+        compile_err = ConditionSyntaxMessage(filename, line, str(e))
+    return ConditionExpr(
+        filename=filename,
+        line=line,
+        expr_source=expr_source,
+        addl_context="",
+        evaluate=evaluate,
+        compile_err=compile_err,
+    )
