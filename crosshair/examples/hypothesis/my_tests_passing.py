@@ -22,5 +22,5 @@ def some_func(x):
 
 @given(st.integers(2, 2).map(some_func))
 def test_map(x):
-    assert x == 4
+    assert x == 0
 
