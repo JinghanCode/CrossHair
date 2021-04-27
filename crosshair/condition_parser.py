@@ -893,6 +893,8 @@ class HypothesisParser(ConcreteConditionParser):
                                                             namespace=namespace)
             conditions.extend(mapped_conditions)
 
+
+        # TODO: Reimplement OneOfStrategy.
         # if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
         #     strategy_list = strategy.original_strategies
         #     expr = f'{self.get_expr_from_strategy(variable, strategy_list[0])}'
@@ -973,37 +975,9 @@ def condition_parser(
 def get_current_parser() -> ConditionParser:
     return _CALLTREE_PARSER.get()
 
-# Helper
+# Helper for Hypothesis Parser
 def compose(g, f):
     def h(*args, **kwargs):
         return g(f(*args, **kwargs))
     h.__name__ = f'{g.__name__}_composite_{f.__name__}'
     return h
-
-# def condition_from_expr(
-#         filename: str,
-#         line: int,
-#         expr_source: str,
-#         namespace: Dict[str, object],
-#
-# ) -> ConditionExpr:
-#     evaluate, compile_err = None, None
-#     # expr_source = f'{expr_source} and (x == 2 * z)'
-#     # print(expr_source)
-#     try:
-#         compiled = compile_expr(expr_source)
-#         def evaluatefn(bindings: Mapping[str, object]) -> bool:
-#             return eval(compiled, {**namespace, **bindings})
-#
-#         evaluate = evaluatefn
-#     except:
-#         e = sys.exc_info()[1]
-#         compile_err = ConditionSyntaxMessage(filename, line, str(e))
-#     return ConditionExpr(
-#         filename=filename,
-#         line=line,
-#         expr_source=expr_source,
-#         addl_context="",
-#         evaluate=evaluate,
-#         compile_err=compile_err,
-#     )
