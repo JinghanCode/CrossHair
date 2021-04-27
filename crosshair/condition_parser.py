@@ -866,6 +866,9 @@ class HypothesisParser(ConcreteConditionParser):
             fn_syntax_messages=[],
         )
 
+    # TODO: Need to make sure that all symbols are unique. i.e. Currently can't have "x_" in the fn sig.
+    # Solution is to keep a dictionary of all parameters and their associated symbols.
+
     def get_cond_from_strategy(self,
                                variable,
                                strategy,
