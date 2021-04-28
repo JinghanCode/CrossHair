@@ -896,20 +896,18 @@ class HypothesisParser(ConcreteConditionParser):
                                                             namespace=namespace)
             conditions.extend(mapped_conditions)
 
-
-        # TODO: Reimplement OneOfStrategy.
         if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
             strategy_list = strategy.original_strategies
-            first_cond = self.get_cond_from_strategy(variable, 
-                                                     strategy_list[0], 
-                                                     None, 
-                                                     filename, 
-                                                     first_line, 
-                                                     namespace)
-
-            for arg_strategy in strategy_list[1:]:
-                expr += f' or {self.get_expr_from_strategy(variable, arg_strategy)}'
-            return expr
+            conditions_to_or = []
+            for strategy in strategy_list:
+                conditions = self.get_cond_from_strategy(variable,
+                                                         strategy,
+                                                         None,
+                                                         filename,
+                                                         first_line,
+                                                         namespace)
+                conditions_to_or.append(and_conditions(conditions))
+            return or_conditions(conditions_to_or)
 
         if isinstance(strategy, hypothesis.strategies._internal.numbers.IntegersStrategy):
             lower_bound = strategy.start
@@ -984,6 +982,7 @@ def condition_parser(
 def get_current_parser() -> ConditionParser:
     return _CALLTREE_PARSER.get()
 
+
 # Helper for Hypothesis Parser
 def compose(g, f):
     def h(*args, **kwargs):
@@ -991,6 +990,56 @@ def compose(g, f):
     h.__name__ = f'{g.__name__}_composite_{f.__name__}'
     return h
 
-def or_conditions(lhs_cond, rhs_cond):
-    #TODO: Implement this.
-    return None
+
+def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
+    evaluate_fns = []
+    or_expr_source, filename, line = ""
+    first = True
+    for condition in conditions:
+        evaluate_fns.append(condition.evaluate)
+        if first:
+            filename = condition.filename
+            line = condition.line
+            or_expr_source += f"{condition.expr_source}"
+        else:
+            or_expr_source += f" or {condition.expr_source}"
+
+    def evaluate_logic_or(bindings: Mapping[str, object]) -> bool:
+        for evaluate_fn in evaluate_fns:
+            if evaluate_fn(bindings):
+                return True
+        return False
+
+    return ConditionExpr(
+        filename=filename,
+        line=line,
+        expr_source=or_expr_source,
+        evaluate=evaluate_logic_or
+    )
+
+
+def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
+    evaluate_fns = []
+    and_expr_source, filename, line = ""
+    first = True
+    for condition in conditions:
+        evaluate_fns.append(condition.evaluate)
+        if first:
+            filename = condition.filename
+            line = condition.line
+            and_expr_source += f"{condition.expr_source}"
+        else:
+            and_expr_source += f" and {condition.expr_source}"
+
+    def evaluate_logic_and(bindings: Mapping[str, object]) -> bool:
+        for evaluate_fn in evaluate_fns:
+            if not evaluate_fn(bindings):
+                return False
+        return True
+
+    return ConditionExpr(
+        filename=filename,
+        line=line,
+        expr_source=and_expr_source,
+        evaluate=evaluate_logic_and
+    )
