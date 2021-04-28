@@ -19,8 +19,7 @@ def test_multiple_strategies(x, y):
 def some_func(x):
     return x * 2
 
-
-@given(st.integers(2, 2).map(some_func))
+@given(st.integers(1, 5).map(some_func))
 def test_map(x):
-    assert x == 0
-
+    assert x % 2 == 0
+    assert x % 2 == 1

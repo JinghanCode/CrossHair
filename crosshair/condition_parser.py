@@ -898,12 +898,18 @@ class HypothesisParser(ConcreteConditionParser):
 
 
         # TODO: Reimplement OneOfStrategy.
-        # if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
-        #     strategy_list = strategy.original_strategies
-        #     expr = f'{self.get_expr_from_strategy(variable, strategy_list[0])}'
-        #     for arg_strategy in strategy_list[1:]:
-        #         expr += f' or {self.get_expr_from_strategy(variable, arg_strategy)}'
-        #     return expr
+        if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
+            strategy_list = strategy.original_strategies
+            first_cond = self.get_cond_from_strategy(variable, 
+                                                     strategy_list[0], 
+                                                     None, 
+                                                     filename, 
+                                                     first_line, 
+                                                     namespace)
+
+            for arg_strategy in strategy_list[1:]:
+                expr += f' or {self.get_expr_from_strategy(variable, arg_strategy)}'
+            return expr
 
         if isinstance(strategy, hypothesis.strategies._internal.numbers.IntegersStrategy):
             lower_bound = strategy.start
@@ -984,3 +990,7 @@ def compose(g, f):
         return g(f(*args, **kwargs))
     h.__name__ = f'{g.__name__}_composite_{f.__name__}'
     return h
+
+def or_conditions(lhs_cond, rhs_cond):
+    #TODO: Implement this.
+    return None
