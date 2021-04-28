@@ -20,9 +20,10 @@ except ModuleNotFoundError:
 
 try:
     import hypothesis
+    import hypothesis.errors
     from hypothesis.strategies import SearchStrategy
 except ModuleNotFoundError:
-    hypothesis = None
+    hypothesis = None  # type: ignore
 
 from crosshair.fnutil import fn_globals
 from crosshair.fnutil import resolve_signature
@@ -35,8 +36,6 @@ from crosshair.util import frame_summary_for_fn
 from crosshair.util import memo
 from crosshair.util import sourcelines
 from crosshair.util import DynamicScopeVar
-# import hypothesis.core
-import hypothesis.errors
 
 
 def strip_comment_line(line: str) -> str:
@@ -467,6 +466,7 @@ def condition_from_source_text(
     # print(expr_source)
     try:
         compiled = compile_expr(expr_source)
+
         def evaluatefn(bindings: Mapping[str, object]) -> bool:
             return eval(compiled, {**namespace, **bindings})
 
@@ -818,7 +818,6 @@ class AssertsParser(ConcreteConditionParser):
 
 
 class HypothesisParser(ConcreteConditionParser):
-
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
         fn_and_sig = ctxfn.get_callable()
         if fn_and_sig is None:
@@ -827,9 +826,9 @@ class HypothesisParser(ConcreteConditionParser):
 
         # TODO replace this guard with package-level configuration?
         if (
-                getattr(fn, "__module__", False)
-                and fn.__module__.startswith("crosshair.")
-                and not fn.__module__.endswith("_test")
+            getattr(fn, "__module__", False)
+            and fn.__module__.startswith("crosshair.")
+            and not fn.__module__.endswith("_test")
         ):
             return None
 
@@ -847,12 +846,14 @@ class HypothesisParser(ConcreteConditionParser):
         post = [ConditionExpr(lambda _: True, filename, first_line, "")]
 
         for variable, wrapped_strategy in given_kwargs.items():
-            conds = self.get_cond_from_strategy(variable=variable,
-                                                strategy=wrapped_strategy,
-                                                mapping_function=None,
-                                                filename=filename,
-                                                first_line=first_line,
-                                                namespace=namespace)
+            conds = self.get_cond_from_strategy(
+                variable=variable,
+                strategy=wrapped_strategy,
+                mapping_function=None,
+                filename=filename,
+                first_line=first_line,
+                namespace=namespace,
+            )
             pre.extend(conds)
 
         return Conditions(
@@ -869,18 +870,22 @@ class HypothesisParser(ConcreteConditionParser):
     # TODO: Need to make sure that all symbols are unique. i.e. Currently can't have "x_" in the fn sig.
     # Solution is to keep a dictionary of all parameters and their associated symbols.
 
-    def get_cond_from_strategy(self,
-                               variable,
-                               strategy,
-                               mapping_function: Optional[Callable],
-                               filename,
-                               first_line,
-                               namespace) -> List[ConditionExpr]:
+    def get_cond_from_strategy(
+        self,
+        variable,
+        strategy,
+        mapping_function: Optional[Callable],
+        filename,
+        first_line,
+        namespace,
+    ) -> List[ConditionExpr]:
 
         conditions = []
         strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(strategy)
 
-        if isinstance(strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy):
+        if isinstance(
+            strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
+        ):
             mapped_strategy = strategy.mapped_strategy
             cur_mapping_function = strategy.pack
 
@@ -888,65 +893,72 @@ class HypothesisParser(ConcreteConditionParser):
                 mapping_function = compose(cur_mapping_function, mapping_function)
             else:
                 mapping_function = cur_mapping_function
-            mapped_conditions = self.get_cond_from_strategy(variable=variable,
-                                                            strategy=mapped_strategy,
-                                                            mapping_function=mapping_function,
-                                                            filename=filename,
-                                                            first_line=first_line,
-                                                            namespace=namespace)
+            mapped_conditions = self.get_cond_from_strategy(
+                variable=variable,
+                strategy=mapped_strategy,
+                mapping_function=mapping_function,
+                filename=filename,
+                first_line=first_line,
+                namespace=namespace,
+            )
             conditions.extend(mapped_conditions)
 
-        if isinstance(strategy, hypothesis.strategies._internal.strategies.OneOfStrategy):
+        if isinstance(
+            strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
+        ):
             strategy_list = strategy.original_strategies
             conditions_to_or = []
             for strategy in strategy_list:
-                conditions = self.get_cond_from_strategy(variable,
-                                                         strategy,
-                                                         None,
-                                                         filename,
-                                                         first_line,
-                                                         namespace)
+                conditions = self.get_cond_from_strategy(
+                    variable, strategy, None, filename, first_line, namespace
+                )
                 conditions_to_or.append(and_conditions(conditions))
-            return or_conditions(conditions_to_or)
+            conditions.append(or_conditions(conditions_to_or))
 
-        if isinstance(strategy, hypothesis.strategies._internal.numbers.IntegersStrategy):
+        if isinstance(
+            strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
+        ):
             lower_bound = strategy.start
             upper_bound = strategy.end
 
             if mapping_function is not None:
-                variable_prime = f'{variable}_'
+                variable_prime = f"{variable}_"
                 namespace[mapping_function.__name__] = mapping_function
 
                 lower_bound = mapping_function(lower_bound)
                 upper_bound = mapping_function(upper_bound)
-                expr_for_map = f'{variable} == {mapping_function.__name__}({variable_prime})'
-                condition_expr_for_map = condition_from_source_text(filename=filename,
-                                                                    line=first_line,
-                                                                    expr_source=expr_for_map,
-                                                                    namespace=namespace)
+                expr_for_map = (
+                    f"{variable} == {mapping_function.__name__}({variable_prime})"
+                )
+                condition_expr_for_map = condition_from_source_text(
+                    filename=filename,
+                    line=first_line,
+                    expr_source=expr_for_map,
+                    namespace=namespace,
+                )
                 condition_expr_for_map.addl_symbols = {variable_prime: int}
                 conditions.append(condition_expr_for_map)
 
-            expr = f'isinstance({variable}, int)'
+            expr = f"isinstance({variable}, int)"
 
             if lower_bound is not None and upper_bound is not None:
-                expr = f'({lower_bound} <= {variable} <= {upper_bound})'
+                expr = f"({lower_bound} <= {variable} <= {upper_bound})"
 
             elif lower_bound is not None:
-                expr = f'({lower_bound} <= {variable})'
+                expr = f"({lower_bound} <= {variable})"
 
             elif upper_bound is not None:
-                expr = f'({variable} <= {upper_bound})'
+                expr = f"({variable} <= {upper_bound})"
 
-            condition_expr = condition_from_source_text(filename=filename,
-                                                        line=first_line,
-                                                        expr_source=expr,
-                                                        namespace=namespace)
+            condition_expr = condition_from_source_text(
+                filename=filename,
+                line=first_line,
+                expr_source=expr,
+                namespace=namespace,
+            )
             conditions.append(condition_expr)
 
         return conditions
-
-
 
     def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
         return []
@@ -956,7 +968,7 @@ _PARSER_MAP = {
     AnalysisKind.PEP316: Pep316Parser,
     AnalysisKind.icontract: IcontractParser,
     AnalysisKind.hypothesis: HypothesisParser,
-    AnalysisKind.asserts: AssertsParser
+    AnalysisKind.asserts: AssertsParser,
 }
 
 
@@ -987,7 +999,8 @@ def get_current_parser() -> ConditionParser:
 def compose(g, f):
     def h(*args, **kwargs):
         return g(f(*args, **kwargs))
-    h.__name__ = f'{g.__name__}_composite_{f.__name__}'
+
+    h.__name__ = f"{g.__name__}_composite_{f.__name__}"
     return h
 
 
@@ -1014,13 +1027,15 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         filename=filename,
         line=line,
         expr_source=or_expr_source,
-        evaluate=evaluate_logic_or
+        evaluate=evaluate_logic_or,
     )
 
 
 def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     evaluate_fns = []
-    and_expr_source, filename, line = ""
+    and_expr_source = ""
+    filename = ""
+    line = None
     first = True
     for condition in conditions:
         evaluate_fns.append(condition.evaluate)
@@ -1041,5 +1056,5 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         filename=filename,
         line=line,
         expr_source=and_expr_source,
-        evaluate=evaluate_logic_and
+        evaluate=evaluate_logic_and,
     )
