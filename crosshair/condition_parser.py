@@ -460,10 +460,7 @@ def condition_from_source_text(
     namespace: Dict[str, object],
     addl_context: str = "",
 ) -> ConditionExpr:
-    print(expr_source)
     evaluate, compile_err = None, None
-    # expr_source = f'{expr_source} and (x == 2 * z)'
-    # print(expr_source)
     try:
         compiled = compile_expr(expr_source)
 
@@ -1006,7 +1003,9 @@ def compose(g, f):
 
 def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     evaluate_fns = []
-    or_expr_source, filename, line = ""
+    or_expr_source = ""
+    filename = ""
+    line = None
     first = True
     for condition in conditions:
         evaluate_fns.append(condition.evaluate)

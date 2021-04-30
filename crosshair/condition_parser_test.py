@@ -325,22 +325,22 @@ class AssertsParserTest(unittest.TestCase):
             nums = [3, 1, 1, 2]
             conditions.fn(nums)
 
-
-@hypothesis.given()
-def test_hypothesis_basic(x):
-    1 / (x - 117)
-
-
-@hypothesis.given(hypothesis.strategies.integers())
-def test_hypothesis_strategies(x):
-    assert False
+if hypothesis:
+    @hypothesis.given()
+    def test_hypothesis_basic(x):
+        1 / (x - 117)
 
 
-class HypothesisParserTest(unittest.TestCase):
-    def test_simple_parse(self) -> None:
-        conditions = HypothesisParser().get_fn_conditions(
-            FunctionInfo.from_fn(test_hypothesis_basic)
-        )
+    @hypothesis.given(hypothesis.strategies.integers())
+    def test_hypothesis_strategies(x):
+        assert False
+
+
+    class HypothesisParserTest(unittest.TestCase):
+        def test_simple_parse(self) -> None:
+            conditions = HypothesisParser().get_fn_conditions(
+                FunctionInfo.from_fn(test_hypothesis_basic)
+            )
 
 
 def test_CompositeConditionParser():

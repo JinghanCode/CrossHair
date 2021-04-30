@@ -41,4 +41,18 @@ def test_multiple_strategies(x, y):
 def test_integers_union(x):
     assert x >= 1
     assert x <= 10
-    assert x == 6  # Should fail here.
+    assert x == 6
+
+def map_to_one(x):
+    return 
+
+@given(
+    st.one_of(
+        st.integers(1, 5), st.integers(9, 10)
+        )
+    )
+def test_integers_union_map(x):
+    assert x >= 1
+    assert x <= 10
+    assert x == 6 
+

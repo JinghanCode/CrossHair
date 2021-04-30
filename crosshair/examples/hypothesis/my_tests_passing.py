@@ -27,4 +27,16 @@ def some_func(x):
 @given(st.integers(1, 5).map(some_func))
 def test_map(x):
     assert x % 2 == 0
-    assert x % 2 == 1
+    assert x % 2 != 1
+
+@given(
+    st.one_of(
+        st.integers(1,5).map(some_func),
+        st.integers(8,9).map(some_func) 
+        )
+    )
+def test_one_of(x):
+    assert x % 2 == 0
+    assert x >= 2
+    assert x <= 18
+
