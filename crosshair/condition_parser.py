@@ -847,7 +847,7 @@ class HypothesisParser(ConcreteConditionParser):
         ):
             return None
 
-        if not hasattr(fn, 'hypothesis'):
+        if not hasattr(fn, "hypothesis"):
             return None
 
         inner_test = fn.hypothesis.inner_test
@@ -893,20 +893,20 @@ class HypothesisParser(ConcreteConditionParser):
         return self.uniq_id
 
     def get_cond_from_strategy(
-            self,
-            variable,
-            strategy,
-            mapping_function: Optional[Callable],
-            filename,
-            first_line,
-            namespace,
+        self,
+        variable,
+        strategy,
+        mapping_function: Optional[Callable],
+        filename,
+        first_line,
+        namespace,
     ) -> List[ConditionExpr]:
 
         conditions = []
         strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(strategy)
 
         if isinstance(
-                strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
+            strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
         ):
             mapped_strategy = strategy.mapped_strategy
             mapper = strategy.pack
@@ -926,7 +926,7 @@ class HypothesisParser(ConcreteConditionParser):
             conditions.extend(mapped_conditions)
 
         if isinstance(
-                strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
+            strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
         ):
             strategy_list = strategy.original_strategies
             or_targets = []
@@ -938,7 +938,7 @@ class HypothesisParser(ConcreteConditionParser):
             conditions.append(or_conditions(or_targets))
 
         if isinstance(
-                strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
+            strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
         ):
             lower_bound = strategy.start
             upper_bound = strategy.end
@@ -946,7 +946,11 @@ class HypothesisParser(ConcreteConditionParser):
             if mapping_function is not None:
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
-                    lambda_source = hypothesis.internal.reflection.extract_lambda_source(mapping_function)
+                    lambda_source = (
+                        hypothesis.internal.reflection.extract_lambda_source(
+                            mapping_function
+                        )
+                    )
                     expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
                 else:
                     namespace[mapping_function.__name__] = mapping_function

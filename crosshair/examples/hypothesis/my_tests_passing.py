@@ -35,5 +35,3 @@ def test_one_of(x):
     assert x % 2 == 0
     assert x >= 2
     assert x <= 18
-
-

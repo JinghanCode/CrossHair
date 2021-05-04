@@ -15,6 +15,7 @@ from hypothesis import given
 #     1 / (x + y + 2300)
 #
 
+
 def multiply_2(x):
     return x * 2
 
@@ -24,8 +25,7 @@ def multiply_2(x):
 #     assert x % 1098567819578 != 1
 
 
-
-@given(st.integers(1).map(lambda x: x*2))
+@given(st.integers(1).map(lambda x: x * 2))
 def test_one_of(x):
     assert x % 2 == 0
     assert x % 2 == 1
