@@ -2,6 +2,7 @@ from copy import deepcopy
 from dataclasses import replace
 from dataclasses import dataclass
 from traceback import extract_tb
+from typing import *
 import types
 
 from crosshair.core import analyze_function
@@ -14,13 +15,13 @@ from crosshair.core import MessageType
 from crosshair.options import AnalysisOptions
 from crosshair.options import AnalysisOptionSet
 from crosshair.options import DEFAULT_OPTIONS
+from crosshair.tracers import NoTracing
 from crosshair.util import debug
 from crosshair.util import in_debug
 from crosshair.util import name_of_type
 from crosshair.util import test_stack
 from crosshair.util import UnexploredPath
 from crosshair.util import IgnoreAttempt
-from typing import *
 
 ComparableLists = Tuple[List, List]
 
@@ -73,7 +74,7 @@ def check_unknown(
 def check_ok(
     fn: Callable, optionset: AnalysisOptionSet = AnalysisOptionSet()
 ) -> ComparableLists:
-    local_opts = AnalysisOptionSet(per_condition_timeout=5)
+    local_opts = AnalysisOptionSet(per_condition_timeout=10, per_path_timeout=5)
     options = local_opts.overlay(optionset)
     messages = [
         message
@@ -165,7 +166,7 @@ def summarize_execution(
         if isinstance(e, (UnexploredPath, IgnoreAttempt)):
             raise
         if in_debug():
-            debug(type(e), e, test_stack(e.__traceback__))
+            debug("hit exception:", type(e), e, test_stack(e.__traceback__))
         exc = e
     args = tuple(realize(a) for a in args)
     kwargs = {k: realize(v) for (k, v) in kwargs.items()}
@@ -197,7 +198,8 @@ def compare_results(fn: Callable, *a: object, **kw: object) -> ResultComparison:
 
     concrete_a = deep_realize(original_a)
     concrete_kw = deep_realize(original_kw)
-    concrete_result = summarize_execution(fn, concrete_a, concrete_kw)
+    with NoTracing():
+        concrete_result = summarize_execution(fn, concrete_a, concrete_kw)
 
     ret = ResultComparison(symbolic_result, concrete_result)
     bool(ret)

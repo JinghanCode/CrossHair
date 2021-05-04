@@ -6,7 +6,24 @@ Changelog
 Next Version
 ============
 
-* Nothing yet!
+* (nothing yet!)
+
+==============
+Version 0.0.13
+==============
+
+* Further simplification of ``crosshair watch`` output for broader terminal support.
+
+==============
+Version 0.0.12
+==============
+
+* Use simpler ``crosshair watch`` screen clearing mechanism for terminals like Thonny's.
+* Several string methods can now be reasoned about symbolically: split, find, replace,
+  index, partition, count, and more.
+  (thanks `Rik-de-Kort <https://github.com/Rik-de-Kort>`_!)
+* Fixed various bugs, including a few specific to icontract analysis.
+* Modestly increased regex cases that CrossHair handles. (including named groups!)
 
 ==============
 Version 0.0.11

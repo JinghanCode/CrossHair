@@ -128,7 +128,7 @@ def main(argv: List[str]) -> int:
                     str(strip_cwd(pth)),
                     "--analysis_kind",
                     kind,
-                    "--per_condition_timeout=0.5",
+                    "--per_condition_timeout=0.75",
                 ]
 
                 cmd_as_string = " ".join(shlex.quote(part) for part in cmd)
@@ -209,8 +209,8 @@ def main(argv: List[str]) -> int:
                     # We only check line numbers, as error messages aren't stable.
                     if extract_linenums(expected_stdout) != extract_linenums(stdout):
                         print(
-                            f"The captured output does not correspond to "
-                            f"the expected output.\n\n"
+                            f"The line numbers that have errors are different than "
+                            f"expected.\n\n"
                             f"The command was:\n"
                             f"{cmd_as_string}\n\n"
                             f"The captured stdout was:\n"

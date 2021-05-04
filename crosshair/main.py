@@ -204,10 +204,9 @@ def run_watch_loop(watcher, max_watch_iterations=sys.maxsize) -> None:
     for itr_num in range(max_watch_iterations):
         if restart:
             clear_screen()
-            clear_line("-")
+            print_divider("-")
             line = f"  Analyzing {len(watcher._modtimes)} files."
-            sys.stdout.write(color(line, AnsiColor.OKBLUE))
-            sys.stdout.flush()
+            print(color(line, AnsiColor.OKBLUE))
             max_condition_timeout = 0.5
             restart = False
             stats = Counter()
@@ -218,19 +217,17 @@ def run_watch_loop(watcher, max_watch_iterations=sys.maxsize) -> None:
         for curstats, messages in watcher.run_iteration(max_condition_timeout):
             debug("stats", curstats, messages)
             stats.update(curstats)
+            clear_screen()
             if messages_merged(active_messages, messages):
                 linecache.checkcache()
-                clear_screen()
-                options = DEFAULT_OPTIONS.overlay(watcher._options)
-                for message in active_messages.values():
-                    lines = long_describe_message(message, options)
-                    if lines is None:
-                        continue
-                    clear_line("-")
-                    print(lines, end="")
-                clear_line("-")
-            else:
-                print("\r", end="")  # overwrite current status line
+            options = DEFAULT_OPTIONS.overlay(watcher._options)
+            for message in active_messages.values():
+                lines = long_describe_message(message, options)
+                if lines is None:
+                    continue
+                print_divider("-")
+                print(lines, end="")
+            print_divider("-")
             num_files = len(watcher._modtimes)
             if len(watcher._paths) > 1:
                 loc_desc = f"{num_files} files"
@@ -241,29 +238,25 @@ def run_watch_loop(watcher, max_watch_iterations=sys.maxsize) -> None:
                 else:
                     loc_desc = f'"{path_desc}"'
             line = f'  Analyzed {stats["num_paths"]} paths in {loc_desc}.'
-            sys.stdout.write(color(line, AnsiColor.OKBLUE))
-            sys.stdout.flush()
+            print(color(line, AnsiColor.OKBLUE))
         if watcher._change_flag:
             watcher._change_flag = False
             restart = True
             line = f"  Restarting analysis over {len(watcher._modtimes)} files."
-            sys.stdout.write(color(line, AnsiColor.OKBLUE))
-            sys.stdout.flush()
+            print(color(line, AnsiColor.OKBLUE))
 
 
 def clear_screen():
-    # Current line is assumed to be a status line; erase it.
-    # Please note that we never want to print "\r" sooner than necessary because the
-    # PyCharm terminal erases the current line:
-    # https://stackoverflow.com/questions/34751441/when-writing-carriage-return-to-a-pycharm-console-the-whole-line-is-deleted
-    print("\r")
-    clear_line()
     # Print enough newlines to fill the screen:
     print("\n" * shutil.get_terminal_size().lines, end="")
 
 
-def clear_line(ch=" "):
-    sys.stdout.write(ch * shutil.get_terminal_size().columns)
+def print_divider(ch=" "):
+    try:
+        cols = os.get_terminal_size().columns - 1
+    except OSError:
+        cols = 5
+    print(ch * cols)
 
 
 class AnsiColor(enum.Enum):

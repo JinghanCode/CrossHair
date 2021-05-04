@@ -39,6 +39,21 @@ from crosshair.util import sourcelines
 from crosshair.util import DynamicScopeVar
 
 
+class NoEnforce:
+    """
+    Signal to suppress contract enforcement.
+
+    This function wrapper does nothing on its own. But the enforcement tracer
+    looks for it and will skip conditions on `fn` when this wrapper is detected.
+    """
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __call__(self, *a, **kw) -> object:
+        return self.fn(*a, **kw)
+
+
 def strip_comment_line(line: str) -> str:
     line = line.strip()
     if line.startswith("'''") or line.startswith('"""'):
@@ -613,7 +628,7 @@ class IcontractParser(ConcreteConditionParser):
         pre: List[ConditionExpr] = []
         post: List[ConditionExpr] = []
 
-        def eval_contract(contract, kwargs):
+        def eval_contract(contract, kwargs: Mapping) -> bool:
             condition_kwargs = icontract._checkers.select_condition_kwargs(
                 contract=contract, resolved_kwargs=kwargs
             )
@@ -633,7 +648,7 @@ class IcontractParser(ConcreteConditionParser):
                 )
         else:
 
-            def eval_disjunction(disjunction, kwargs) -> bool:
+            def eval_disjunction(disjunction, kwargs: Mapping) -> bool:
                 for conjunction in disjunction:
                     ok = True
                     for contract in conjunction:
@@ -669,7 +684,8 @@ class IcontractParser(ConcreteConditionParser):
                 old_as_mapping[snap.name] = snap.capture(**snap_kwargs)
             return icontract._checkers.Old(mapping=old_as_mapping)
 
-        def post_eval(contract, kwargs):
+        def post_eval(contract, orig_kwargs: Mapping) -> bool:
+            kwargs = dict(orig_kwargs)
             _old = kwargs.pop("__old__")
             kwargs["OLD"] = take_snapshots(**_old.__dict__)
             kwargs["result"] = kwargs.pop("__return__")
@@ -789,7 +805,7 @@ class AssertsParser(ConcreteConditionParser):
         @functools.wraps(fn)
         def wrappedfn(*a, **kw):
             try:
-                return fn(*a, **kw)
+                return NoEnforce(fn)(*a, **kw)
             except AssertionError as e:
                 # TODO: check that this isn't failing at an early line in a different
                 # file?

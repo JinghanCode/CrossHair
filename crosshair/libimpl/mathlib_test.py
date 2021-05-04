@@ -13,7 +13,7 @@ from crosshair.test_util import check_unknown
 from crosshair.test_util import check_messages
 from crosshair.util import set_debug
 
-from crosshair.libimpl.builtinslib import SmtFloat
+from crosshair.libimpl.builtinslib import SymbolicFloat
 from crosshair.statespace import SimpleStateSpace
 from crosshair.statespace import StateSpaceContext
 
@@ -21,8 +21,8 @@ from crosshair.statespace import StateSpaceContext
 class MathLibTests(unittest.TestCase):
     def test_isfinite(self):
         space = SimpleStateSpace()
-        with Patched(enabled=lambda: True), StateSpaceContext(space):
-            x = SmtFloat("symfloat")
+        with Patched(), StateSpaceContext(space):
+            x = SymbolicFloat("symfloat")
             self.assertTrue(math.isfinite(x))
             self.assertTrue(math.isfinite(2.3))
             self.assertFalse(math.isfinite(float("nan")))

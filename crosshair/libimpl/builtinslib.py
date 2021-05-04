@@ -23,7 +23,7 @@ from crosshair.core import python_type
 from crosshair.core import normalize_pytype
 from crosshair.core import choose_type
 from crosshair.core import CrossHairValue
-from crosshair.core import SmtProxyMarker
+from crosshair.core import SymbolicProxyMarker
 from crosshair.core import type_arg_of
 from crosshair.core import type_args_of
 from crosshair.core import name_of_type
@@ -42,6 +42,8 @@ from crosshair.statespace import prefer_true
 from crosshair.statespace import SnapshotRef
 from crosshair.statespace import model_value_to_python
 from crosshair.statespace import VerificationStatus
+from crosshair.tracers import NoTracing
+from crosshair.tracers import ResumedTracing
 from crosshair.type_repo import PYTYPE_SORT
 from crosshair.util import debug
 from crosshair.util import memo
@@ -70,8 +72,8 @@ def smt_min(x, y):
 
 
 def smt_and(a: bool, b: bool, *more: bool) -> bool:
-    if isinstance(a, SmtBool) and isinstance(b, SmtBool):
-        ret = SmtBool(z3.And(a.var, b.var))
+    if isinstance(a, SymbolicBool) and isinstance(b, SymbolicBool):
+        ret = SymbolicBool(z3.And(a.var, b.var))
     else:
         ret = a and b
     if not more:
@@ -88,10 +90,10 @@ def pytype_uses_heap(typ: Type) -> bool:
 
 def typeable_value(val: object) -> object:
     """
-    Foces values of unknown type (SmtObject) into a typed (but possibly still symbolic) value.
+    Foces values of unknown type (SymbolicObject) into a typed (but possibly still symbolic) value.
     """
-    while type(val) is SmtObject:
-        val = cast(SmtObject, val)._wrapped()
+    while type(val) is SymbolicObject:
+        val = cast(SymbolicObject, val)._wrapped()
     return val
 
 
@@ -114,7 +116,7 @@ def is_heapref_sort(sort: z3.SortRef) -> bool:
     return sort == HeapRef or sort == _MAYBE_HEAPREF
 
 
-SmtGenerator = Callable[[Union[str, z3.ExprRef], type], object]
+SymbolicGenerator = Callable[[Union[str, z3.ExprRef], type], object]
 
 
 def origin_of(typ: Type) -> Type:
@@ -144,12 +146,12 @@ def smt_bool_to_float(a: z3.ExprRef) -> z3.ExprRef:
 
 
 def smt_coerce(val: Any) -> z3.ExprRef:
-    if isinstance(val, SmtBackedValue):
+    if isinstance(val, SymbolicValue):
         return val.var
     return val
 
 
-class SmtBackedValue(CrossHairValue):
+class SymbolicValue(CrossHairValue):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
         self.statespace = context_statespace()
         self.snapshot = SnapshotRef(-1)
@@ -165,10 +167,12 @@ class SmtBackedValue(CrossHairValue):
 
     def __deepcopy__(self, memo):
         if inside_realization():
-            return self.__ch_realize__()
-        shallow = copy.copy(self)
-        shallow.snapshot = self.statespace.current_snapshot()
-        return shallow
+            result = copy.deepcopy(self.__ch_realize__())
+        else:
+            result = copy.copy(self)
+            result.snapshot = self.statespace.current_snapshot()
+        memo[id(self)] = result
+        return result
 
     def __bool__(self):
         return NotImplemented
@@ -220,10 +224,13 @@ class SmtBackedValue(CrossHairValue):
         return self.__class__(op(self.var), self.python_type)
 
 
-class AtomicSmtValue(SmtBackedValue):
+class AtomicSymbolicValue(SymbolicValue):
     def __init_var__(self, typ, varname):
         z3type = type(self)._ch_smt_sort()
         return z3.Const(varname, z3type)
+
+    def __ch_is_deeply_immutable__(self) -> bool:
+        return True
 
     @classmethod
     def _ch_smt_sort(cls) -> z3.SortRef:
@@ -250,7 +257,7 @@ class AtomicSmtValue(SmtBackedValue):
 
         # see whether we can safely cast and retry
         if isinstance(input_value, Number) and issubclass(cls, Number):
-            if isinstance(input_value, SmtBackedValue):
+            if isinstance(input_value, SymbolicValue):
                 casting_fn_name = "__" + target_pytype.__name__ + "__"
                 converted = getattr(input_value, casting_fn_name)()
                 return cls._coerce_to_smt_sort(converted)
@@ -262,20 +269,20 @@ class AtomicSmtValue(SmtBackedValue):
         return None
 
     def __eq__(self, other):
-        with self.statespace.framework():
+        with NoTracing():
             coerced = type(self)._coerce_to_smt_sort(other)
             if coerced is None:
                 return False
-            return SmtBool(self.var == coerced)
+            return SymbolicBool(self.var == coerced)
 
 
 _PYTYPE_TO_WRAPPER_TYPE: Dict[
-    type, Tuple[Type[AtomicSmtValue], ...]
+    type, Tuple[Type[AtomicSymbolicValue], ...]
 ] = {}  # to be populated later
-_WRAPPER_TYPE_TO_PYTYPE: Dict[SmtGenerator, type] = {}
+_WRAPPER_TYPE_TO_PYTYPE: Dict[SymbolicGenerator, type] = {}
 
 
-def crosshair_types_for_python_type(typ: Type) -> Tuple[Type[AtomicSmtValue], ...]:
+def crosshair_types_for_python_type(typ: Type) -> Tuple[Type[AtomicSymbolicValue], ...]:
     typ = normalize_pytype(typ)
     origin = origin_of(typ)
     return _PYTYPE_TO_WRAPPER_TYPE.get(origin, ())
@@ -295,7 +302,7 @@ def smt_to_ch_value(
 
 
 def force_to_smt_sort(
-    input_value: Any, desired_ch_type: Type[AtomicSmtValue]
+    input_value: Any, desired_ch_type: Type[AtomicSymbolicValue]
 ) -> z3.ExprRef:
     ret = desired_ch_type._coerce_to_smt_sort(input_value)
     if ret is None:
@@ -495,84 +502,84 @@ def setup_binops():
     # Implicitly upconvert symbolic bools to integers.
     # Note that we don't want this when `other` is a boolean, but that
     # case will be overridden in the booleans section below.
-    def _(a: SmtBool, b: Number):
-        return (SmtInt(z3.If(a.var, 1, 0)), b)
+    def _(a: SymbolicBool, b: Number):
+        return (SymbolicInt(z3.If(a.var, 1, 0)), b)
 
     setup_promotion(_, _ALL_OPS)
 
     # Implicitly upconvert symbolic ints to floats.
-    def _(a: SmtInt, b: Union[float, FiniteFloat, SmtFloat, complex]):
-        return (SmtFloat(z3.ToReal(a.var)), b)
+    def _(a: SymbolicInt, b: Union[float, FiniteFloat, SymbolicFloat, complex]):
+        return (SymbolicFloat(z3.ToReal(a.var)), b)
 
     setup_promotion(_, _ARITHMETIC_AND_COMPARISON_OPS)
 
     # Implicitly upconvert native ints to floats.
-    def _(a: int, b: SmtFloat):
+    def _(a: int, b: SymbolicFloat):
         return (float(a), b)
 
     setup_promotion(_, _ARITHMETIC_AND_COMPARISON_OPS)
 
     # Implicitly upconvert native bools to ints.
-    def _(a: bool, b: Union[SmtInt, SmtFloat]):
+    def _(a: bool, b: Union[SymbolicInt, SymbolicFloat]):
         return (int(a), b)
 
     setup_promotion(_, _ARITHMETIC_AND_COMPARISON_OPS)
 
     # complex
-    def _(op: BinFn, a: SmtNumberAble, b: complex):
+    def _(op: BinFn, a: SymbolicNumberAble, b: complex):
         return op(complex(a), b)  # type: ignore
 
     setup_binop(_, _ALL_OPS)
 
     # float
-    def _(op: BinFn, a: SmtFloat, b: SmtFloat):
-        return SmtFloat(apply_smt(op, a.var, b.var))
+    def _(op: BinFn, a: SymbolicFloat, b: SymbolicFloat):
+        return SymbolicFloat(apply_smt(op, a.var, b.var))
 
     setup_binop(_, _ARITHMETIC_OPS)
 
-    def _(op: BinFn, a: SmtFloat, b: SmtFloat):
-        return SmtBool(apply_smt(op, a.var, b.var))
+    def _(op: BinFn, a: SymbolicFloat, b: SymbolicFloat):
+        return SymbolicBool(apply_smt(op, a.var, b.var))
 
     setup_binop(_, _COMPARISON_OPS)
 
-    def _(op: BinFn, a: SmtFloat, b: FiniteFloat):
-        return SmtFloat(apply_smt(op, a.var, z3.RealVal(b)))
+    def _(op: BinFn, a: SymbolicFloat, b: FiniteFloat):
+        return SymbolicFloat(apply_smt(op, a.var, z3.RealVal(b)))
 
     setup_binop(_, _ARITHMETIC_OPS)
 
-    def _(op: BinFn, a: FiniteFloat, b: SmtFloat):
-        return SmtFloat(apply_smt(op, z3.RealVal(a), b.var))
+    def _(op: BinFn, a: FiniteFloat, b: SymbolicFloat):
+        return SymbolicFloat(apply_smt(op, z3.RealVal(a), b.var))
 
     setup_binop(_, _ARITHMETIC_OPS)
 
-    def _(op: BinFn, a: SmtFloat, b: FiniteFloat):
-        return SmtBool(apply_smt(op, a.var, z3.RealVal(b)))
+    def _(op: BinFn, a: SymbolicFloat, b: FiniteFloat):
+        return SymbolicBool(apply_smt(op, a.var, z3.RealVal(b)))
 
     setup_binop(_, _COMPARISON_OPS)
 
     # int
-    def _(op: BinFn, a: SmtInt, b: SmtInt):
-        return SmtInt(apply_smt(op, a.var, b.var))
+    def _(op: BinFn, a: SymbolicInt, b: SymbolicInt):
+        return SymbolicInt(apply_smt(op, a.var, b.var))
 
     setup_binop(_, _ARITHMETIC_AND_BITWISE_OPS)
 
-    def _(op: BinFn, a: SmtInt, b: SmtInt):
-        return SmtBool(apply_smt(op, a.var, b.var))
+    def _(op: BinFn, a: SymbolicInt, b: SymbolicInt):
+        return SymbolicBool(apply_smt(op, a.var, b.var))
 
     setup_binop(_, _COMPARISON_OPS)
 
-    def _(op: BinFn, a: SmtInt, b: int):
-        return SmtInt(apply_smt(op, a.var, z3.IntVal(b)))
+    def _(op: BinFn, a: SymbolicInt, b: int):
+        return SymbolicInt(apply_smt(op, a.var, z3.IntVal(b)))
 
     setup_binop(_, _ARITHMETIC_AND_BITWISE_OPS)
 
-    def _(op: BinFn, a: int, b: SmtInt):
-        return SmtInt(apply_smt(op, z3.IntVal(a), b.var))
+    def _(op: BinFn, a: int, b: SymbolicInt):
+        return SymbolicInt(apply_smt(op, z3.IntVal(a), b.var))
 
     setup_binop(_, _ARITHMETIC_AND_BITWISE_OPS)
 
-    def _(op: BinFn, a: SmtInt, b: int):
-        return SmtBool(apply_smt(op, a.var, z3.IntVal(b)))
+    def _(op: BinFn, a: SymbolicInt, b: int):
+        return SymbolicBool(apply_smt(op, a.var, z3.IntVal(b)))
 
     setup_binop(_, _COMPARISON_OPS)
 
@@ -590,24 +597,24 @@ def setup_binops():
 
     setup_binop(_, {ops.truediv})
 
-    def _(a: SmtInt, b: Number):  # Division over ints must produce float
+    def _(a: SymbolicInt, b: Number):  # Division over ints must produce float
         return (a.__float__(), b)
 
     setup_promotion(_, {ops.truediv})
 
     # bool
-    def _(op: BinFn, a: SmtBool, b: SmtBool):
-        return SmtBool(apply_smt(op, a.var, b.var))
+    def _(op: BinFn, a: SymbolicBool, b: SymbolicBool):
+        return SymbolicBool(apply_smt(op, a.var, b.var))
 
     setup_binop(_, {ops.eq, ops.ne})
 
-    def _(op: BinFn, a: SmtBool, b: bool):
-        return SmtInt(apply_smt(op, a.var, z3.BoolVal(b)))
+    def _(op: BinFn, a: SymbolicBool, b: bool):
+        return SymbolicInt(apply_smt(op, a.var, z3.BoolVal(b)))
 
     setup_binop(_, _ARITHMETIC_OPS)
 
-    def _(op: BinFn, a: bool, b: SmtBool):
-        return SmtInt(apply_smt(op, z3.BoolVal(a), b.var))
+    def _(op: BinFn, a: bool, b: SymbolicBool):
+        return SymbolicInt(apply_smt(op, z3.BoolVal(a), b.var))
 
     setup_binop(_, _ARITHMETIC_OPS)
 
@@ -617,7 +624,7 @@ def setup_binops():
 #
 
 
-class SmtNumberAble(SmtBackedValue, Real):
+class SymbolicNumberAble(SymbolicValue, Real):
     def __pos__(self):
         return self
 
@@ -722,7 +729,7 @@ class SmtNumberAble(SmtBackedValue, Real):
         return (other // self, other % self)
 
 
-class SmtIntable(SmtNumberAble, Integral):
+class SymbolicIntable(SymbolicNumberAble, Integral):
     # bitwise operators
     def __invert__(self):
         return -(self + 1)
@@ -738,22 +745,24 @@ class SmtIntable(SmtNumberAble, Integral):
 
     def __mul__(self, other):
         if isinstance(other, str):
+            if self <= 0:
+                return ""
             # Create a symbolic string that regex-matches as a repetition.
+            other = realize(other)  # z3 does not handle symbolic regexes
             space = self.statespace
-            count = self.var  # z3.If(self.var >= 0, self.var, 0))
-            result = SmtStr(f"{self.var}_str{space.uniq()}")
+            result = SymbolicStr(f"{self.var}_str{space.uniq()}")
             space.add(z3.InRe(result.var, z3.Star(z3.Re(other))))
-            space.add(z3.Length(result.var) == len(other) * count)
+            space.add(z3.Length(result.var) == len(other) * self.var)
             return result
         return numeric_binop(ops.mul, self, other)
 
     __rmul__ = __mul__
 
 
-class SmtBool(AtomicSmtValue, SmtIntable):
+class SymbolicBool(AtomicSymbolicValue, SymbolicIntable):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type = bool):
         assert typ == bool
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
 
     @classmethod
     def _ch_smt_sort(cls) -> z3.SortRef:
@@ -773,7 +782,7 @@ class SmtBool(AtomicSmtValue, SmtIntable):
         return self.statespace.choose_possible(self.var)
 
     def __neg__(self):
-        return SmtInt(z3.If(self.var, -1, 0))
+        return SymbolicInt(z3.If(self.var, -1, 0))
 
     def __repr__(self):
         return self.__bool__().__repr__()
@@ -782,16 +791,16 @@ class SmtBool(AtomicSmtValue, SmtIntable):
         return self.__bool__().__hash__()
 
     def __index__(self):
-        return SmtInt(z3.If(self.var, 1, 0))
+        return SymbolicInt(z3.If(self.var, 1, 0))
 
     def __bool__(self):
         return self.statespace.choose_possible(self.var)
 
     def __int__(self):
-        return SmtInt(z3.If(self.var, 1, 0))
+        return SymbolicInt(z3.If(self.var, 1, 0))
 
     def __float__(self):
-        return SmtFloat(smt_bool_to_float(self.var))
+        return SymbolicFloat(smt_bool_to_float(self.var))
 
     def __complex__(self):
         return complex(self.__float__())
@@ -801,10 +810,10 @@ class SmtBool(AtomicSmtValue, SmtIntable):
         return round(realize(self), realize(ndigits))
 
 
-class SmtInt(AtomicSmtValue, SmtIntable):
+class SymbolicInt(AtomicSymbolicValue, SymbolicIntable):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type = int):
         assert typ == int
-        SmtIntable.__init__(self, smtvar, typ)
+        SymbolicIntable.__init__(self, smtvar, typ)
 
     @classmethod
     def _ch_smt_sort(cls) -> z3.SortRef:
@@ -817,6 +826,8 @@ class SmtInt(AtomicSmtValue, SmtIntable):
     @classmethod
     def _smt_promote_literal(cls, literal) -> Optional[z3.SortRef]:
         if isinstance(literal, int):
+            # Additional __int__() cast in case literal is a bool:
+            literal = literal.__int__()
             return z3.IntVal(literal)
         return None
 
@@ -830,13 +841,13 @@ class SmtInt(AtomicSmtValue, SmtIntable):
     def __repr__(self):
         return self.__index__().__repr__()
         # TODO: do a symbolic conversion!:
-        # return SmtStr(z3.IntToStr(self.var))
+        # return SymbolicStr(z3.IntToStr(self.var))
 
     def __hash__(self):
         return self.__index__().__hash__()
 
     def __float__(self):
-        return SmtFloat(smt_int_to_float(self.var))
+        return SymbolicFloat(smt_int_to_float(self.var))
 
     def __complex__(self):
         return complex(self.__float__())
@@ -845,11 +856,11 @@ class SmtInt(AtomicSmtValue, SmtIntable):
         if self == 0:
             return 0
         ret = self.statespace.find_model_value(self.var)
-        assert type(ret) is int, f"SmtInt with wrong SMT var type ({type(ret)})"
+        assert type(ret) is int, f"SymbolicInt with wrong SMT var type ({type(ret)})"
         return ret
 
     def __bool__(self):
-        return SmtBool(self.var != 0).__bool__()
+        return SymbolicBool(self.var != 0).__bool__()
 
     def __int__(self):
         return self.__index__()
@@ -865,14 +876,14 @@ class SmtInt(AtomicSmtValue, SmtIntable):
     def to_bytes(self, length, byteorder, *, signed=False):
         return realize(self).to_bytes(length, byteorder, signed=signed)
 
-    def as_integer_ratio(self) -> Tuple["SmtInt", int]:
+    def as_integer_ratio(self) -> Tuple["SymbolicInt", int]:
         return (self, 1)
 
 
 _Z3_ONE_HALF = z3.RealVal("1/2")
 
 
-class SmtFloat(AtomicSmtValue, SmtNumberAble):
+class SymbolicFloat(AtomicSymbolicValue, SymbolicNumberAble):
     def __new__(
         mytype, firstarg: Union[None, str, z3.ExprRef] = None, pytype: Type = float
     ):
@@ -884,8 +895,8 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
         return object.__new__(mytype)
 
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type = float):
-        assert typ is float, f"SmtFloat with unexpected python type ({type(typ)})"
-        SmtBackedValue.__init__(self, smtvar, typ)
+        assert typ is float, f"SymbolicFloat with unexpected python type ({type(typ)})"
+        SymbolicValue.__init__(self, smtvar, typ)
 
     @classmethod
     def _ch_smt_sort(cls) -> z3.SortRef:
@@ -912,11 +923,11 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
         return self.statespace.find_model_value(self.var).__hash__()
 
     def __bool__(self):
-        return SmtBool(self.var != 0).__bool__()
+        return SymbolicBool(self.var != 0).__bool__()
 
     def __int__(self):
         var = self.var
-        return SmtInt(z3.If(var >= 0, z3.ToInt(var), -z3.ToInt(-var)))
+        return SymbolicInt(z3.If(var >= 0, z3.ToInt(var), -z3.ToInt(-var)))
 
     def __float__(self):
         return self.__ch_realize__()
@@ -936,7 +947,7 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
                 z3.ToInt(self.var),
                 z3.ToInt(self.var + _Z3_ONE_HALF),
             )
-            return SmtInt(
+            return SymbolicInt(
                 z3.If(
                     var != floor + _Z3_ONE_HALF,
                     nearest,
@@ -945,11 +956,11 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
             )
 
     def __floor__(self):
-        return SmtInt(z3.ToInt(self.var))
+        return SymbolicInt(z3.ToInt(self.var))
 
     def __ceil__(self):
         var, floor = self.var, z3.ToInt(self.var)
-        return SmtInt(z3.If(var == floor, floor, floor + 1))
+        return SymbolicInt(z3.If(var == floor, floor, floor + 1))
 
     def __mod__(self, other):
         return realize(self) % realize(
@@ -958,12 +969,12 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
 
     def __trunc__(self):
         var, floor = self.var, z3.ToInt(self.var)
-        return SmtInt(z3.If(var >= 0, floor, floor + 1))
+        return SymbolicInt(z3.If(var >= 0, floor, floor + 1))
 
     def as_integer_ratio(self) -> Tuple[Integral, Integral]:
         space = context_statespace()
-        numerator = SmtInt("numerator" + space.uniq())
-        denominator = SmtInt("denominator" + space.uniq())
+        numerator = SymbolicInt("numerator" + space.uniq())
+        denominator = SymbolicInt("denominator" + space.uniq())
         space.add(denominator.var > 0)
         space.add(numerator.var == denominator.var * self.var)
         # There are many valid integer ratios to return. Experimentally, both
@@ -977,14 +988,14 @@ class SmtFloat(AtomicSmtValue, SmtNumberAble):
         )
         return (numerator, denominator)
 
-    def is_integer(self) -> SmtBool:
-        return SmtBool(z3.IsInt(self.var))
+    def is_integer(self) -> SymbolicBool:
+        return SymbolicBool(z3.IsInt(self.var))
 
     def hex(self) -> str:
         return realize(self).hex()
 
 
-class SmtDictOrSet(SmtBackedValue):
+class SymbolicDictOrSet(SymbolicValue):
     """
     TODO: Ordering is a challenging issue here.
     Modern pythons have in-order iteration for dictionaries but not sets.
@@ -994,12 +1005,12 @@ class SmtDictOrSet(SmtBackedValue):
         self.key_pytype = normalize_pytype(type_arg_of(typ, 0))
         ch_types = crosshair_types_for_python_type(self.key_pytype)
         if ch_types:
-            self.ch_key_type: Optional[Type[AtomicSmtValue]] = ch_types[0]
+            self.ch_key_type: Optional[Type[AtomicSymbolicValue]] = ch_types[0]
             self.smt_key_sort = self.ch_key_type._ch_smt_sort()
         else:
             self.ch_key_type = None
             self.smt_key_sort = HeapRef
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
         self.statespace.add(self._len() >= 0)
 
     def __ch_realize__(self):
@@ -1012,13 +1023,13 @@ class SmtDictOrSet(SmtBackedValue):
         return self.var[1]
 
     def __len__(self):
-        return SmtInt(self._len())
+        return SymbolicInt(self._len())
 
     def __bool__(self):
-        return SmtBool(self._len() != 0).__bool__()
+        return SymbolicBool(self._len() != 0).__bool__()
 
 
-class SmtDict(SmtDictOrSet, collections.abc.Mapping):
+class SymbolicDict(SymbolicDictOrSet, collections.abc.Mapping):
     """ An immutable symbolic dictionary. """
 
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
@@ -1026,12 +1037,12 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
         self.val_pytype = normalize_pytype(type_arg_of(typ, 1))
         val_ch_types = crosshair_types_for_python_type(self.val_pytype)
         if val_ch_types:
-            self.ch_val_type: Optional[Type[AtomicSmtValue]] = val_ch_types[0]
+            self.ch_val_type: Optional[Type[AtomicSymbolicValue]] = val_ch_types[0]
             self.smt_val_sort = self.ch_val_type._ch_smt_sort()
         else:
             self.ch_val_type = None
             self.smt_val_sort = HeapRef
-        SmtDictOrSet.__init__(self, smtvar, typ)
+        SymbolicDictOrSet.__init__(self, smtvar, typ)
         arr_var = self._arr()
         len_var = self._len()
         self.val_missing_checker = arr_var.sort().range().recognizer(0)
@@ -1042,12 +1053,12 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
         self._iter_cache: List[z3.Const] = []
         space.add((arr_var == self.empty) == (len_var == 0))
 
-        def list_can_be_iterated():
-            list(self)
+        def dict_can_be_iterated():
+            list(self.__iter__())
             return True
 
         space.defer_assumption(
-            "dict iteration is consistent with items", list_can_be_iterated
+            "dict iteration is consistent with items", dict_can_be_iterated
         )
 
     def __init_var__(self, typ, varname):
@@ -1066,9 +1077,11 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
             self.var[0].sort().range()
         )
         if not has_heapref:
-            if isinstance(other, SmtDict):
+            if isinstance(other, SymbolicDict):
                 (other_arr, other_len) = other.var
-                return SmtBool(z3.And(self_len == other_len, self_arr == other_arr))
+                return SymbolicBool(
+                    z3.And(self_len == other_len, self_arr == other_arr)
+                )
         # Manually check equality. Drive the loop from the (likely) concrete value 'other':
         if not isinstance(other, collections.abc.Mapping):
             return False
@@ -1084,7 +1097,7 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
         return str(dict(self.items()))
 
     def __getitem__(self, k):
-        with self.statespace.framework():
+        with NoTracing():
             smt_key = None
             if self.ch_key_type:
                 smt_key = self.ch_key_type._coerce_to_smt_sort(k)
@@ -1097,10 +1110,10 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
                 raise KeyError(k)
             possibly_missing = self._arr()[smt_key]
             is_missing = self.val_missing_checker(possibly_missing)
-            if SmtBool(is_missing).__bool__():
+            if SymbolicBool(is_missing).__bool__():
                 raise KeyError(k)
-            if SmtBool(self._len() == 0).__bool__():
-                raise IgnoreAttempt("SmtDict in inconsistent state")
+            if SymbolicBool(self._len() == 0).__bool__():
+                raise IgnoreAttempt("SymbolicDict in inconsistent state")
             return smt_to_ch_value(
                 self.statespace,
                 self.snapshot,
@@ -1112,45 +1125,51 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
         return reversed(list(self))
 
     def __iter__(self):
-        arr_var, len_var = self.var
-        iter_cache = self._iter_cache
-        space = self.statespace
-        idx = 0
-        arr_sort = self._arr().sort()
-        is_missing = self.val_missing_checker
-        while SmtBool(idx < len_var).__bool__():
-            if not space.choose_possible(arr_var != self.empty, favor_true=True):
-                raise IgnoreAttempt("SmtDict in inconsistent state")
-            k = z3.Const("k" + str(idx) + space.uniq(), arr_sort.domain())
-            v = z3.Const("v" + str(idx) + space.uniq(), self.val_constructor.domain(0))
-            remaining = z3.Const("remaining" + str(idx) + space.uniq(), arr_sort)
-            space.add(arr_var == z3.Store(remaining, k, self.val_constructor(v)))
-            space.add(is_missing(z3.Select(remaining, k)))
+        with NoTracing():
+            arr_var, len_var = self.var
+            iter_cache = self._iter_cache
+            space = self.statespace
+            idx = 0
+            arr_sort = self._arr().sort()
+            is_missing = self.val_missing_checker
+            while SymbolicBool(idx < len_var).__bool__():
+                if not space.choose_possible(arr_var != self.empty, favor_true=True):
+                    raise IgnoreAttempt("SymbolicDict in inconsistent state")
+                k = z3.Const("k" + str(idx) + space.uniq(), arr_sort.domain())
+                v = z3.Const(
+                    "v" + str(idx) + space.uniq(), self.val_constructor.domain(0)
+                )
+                remaining = z3.Const("remaining" + str(idx) + space.uniq(), arr_sort)
+                space.add(arr_var == z3.Store(remaining, k, self.val_constructor(v)))
+                space.add(is_missing(z3.Select(remaining, k)))
 
-            # TODO: is this true now? it's immutable these days?
-            # our iter_cache might contain old keys that were removed;
-            # check to make sure the current key is still present:
-            while idx < len(iter_cache):
-                still_present = z3.Not(is_missing(z3.Select(arr_var, iter_cache[idx])))
-                if space.choose_possible(still_present, favor_true=True):
-                    break
-                del iter_cache[idx]
-            if idx > len(iter_cache):
-                raise CrosshairInternal()
-            if idx == len(iter_cache):
-                iter_cache.append(k)
-            else:
-                space.add(k == iter_cache[idx])
-            idx += 1
-            yield smt_to_ch_value(space, self.snapshot, k, self.key_pytype)
-            arr_var = remaining
-        # In this conditional, we reconcile the parallel symbolic variables for length
-        # and contents:
-        if not space.choose_possible(arr_var == self.empty, favor_true=True):
-            raise IgnoreAttempt("SmtDict in inconsistent state")
+                # TODO: is this true now? it's immutable these days?
+                # our iter_cache might contain old keys that were removed;
+                # check to make sure the current key is still present:
+                while idx < len(iter_cache):
+                    still_present = z3.Not(
+                        is_missing(z3.Select(arr_var, iter_cache[idx]))
+                    )
+                    if space.choose_possible(still_present, favor_true=True):
+                        break
+                    del iter_cache[idx]
+                if idx > len(iter_cache):
+                    raise CrosshairInternal()
+                if idx == len(iter_cache):
+                    iter_cache.append(k)
+                else:
+                    space.add(k == iter_cache[idx])
+                idx += 1
+                with ResumedTracing():
+                    yield smt_to_ch_value(space, self.snapshot, k, self.key_pytype)
+                arr_var = remaining
+            # In this conditional, we reconcile the parallel symbolic variables for length
+            # and contents:
+            if not space.choose_possible(arr_var == self.empty, favor_true=True):
+                raise IgnoreAttempt("SymbolicDict in inconsistent state")
 
     def copy(self):
-        return SmtDict(self.var, self.python_type)
+        return SymbolicDict(self.var, self.python_type)
 
     # TODO: investigate this approach for type masquerading:
     # @property
@@ -1158,20 +1177,23 @@ class SmtDict(SmtDictOrSet, collections.abc.Mapping):
     #    return dict
 
 
-class SmtSet(SmtDictOrSet, collections.abc.Set):
+class SymbolicSet(SymbolicDictOrSet, collections.abc.Set):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
-        SmtDictOrSet.__init__(self, smtvar, typ)
+        SymbolicDictOrSet.__init__(self, smtvar, typ)
         self._iter_cache: List[z3.Const] = []
         self.empty = z3.K(self._arr().sort().domain(), False)
         self.statespace.add((self._arr() == self.empty) == (self._len() == 0))
 
     def __eq__(self, other):
         (self_arr, self_len) = self.var
-        if isinstance(other, SmtSet):
+        if isinstance(other, SymbolicSet):
             (other_arr, other_len) = other.var
             if other_arr.sort() == self_arr.sort():
-                return SmtBool(z3.And(self_len == other_len, self_arr == other_arr))
-        if not isinstance(other, (set, frozenset, SmtSet)):
+                # TODO: this is wrong for HeapRef sets (which could customize __eq__)
+                return SymbolicBool(
+                    z3.And(self_len == other_len, self_arr == other_arr)
+                )
+        if not isinstance(other, (set, frozenset, SymbolicSet)):
             return False
         # Manually check equality. Drive size from the (likely) concrete value 'other':
         if len(self) != len(other):
@@ -1208,7 +1230,7 @@ class SmtSet(SmtDictOrSet, collections.abc.Set):
             k = None
         if k is not None:
             present = self._arr()[k]
-            return SmtBool(present)
+            return SymbolicBool(present)
         # Fall back to standard equality and iteration
         for self_item in self:
             if self_item == key:
@@ -1216,42 +1238,46 @@ class SmtSet(SmtDictOrSet, collections.abc.Set):
         return False
 
     def __iter__(self):
-        arr_var, len_var = self.var
-        iter_cache = self._iter_cache
-        space = self.statespace
-        idx = 0
-        arr_sort = self._arr().sort()
-        keys_on_heap = is_heapref_sort(arr_sort.domain())
-        already_yielded = []
-        while SmtBool(idx < len_var).__bool__():
-            if not space.choose_possible(arr_var != self.empty, favor_true=True):
-                raise IgnoreAttempt("SmtSet in inconsistent state")
-            k = z3.Const("k" + str(idx) + space.uniq(), arr_sort.domain())
-            remaining = z3.Const("remaining" + str(idx) + space.uniq(), arr_sort)
-            space.add(arr_var == z3.Store(remaining, k, True))
-            space.add(z3.Not(z3.Select(remaining, k)))
+        with NoTracing():
+            arr_var, len_var = self.var
+            iter_cache = self._iter_cache
+            space = self.statespace
+            idx = 0
+            arr_sort = self._arr().sort()
+            keys_on_heap = is_heapref_sort(arr_sort.domain())
+            already_yielded = []
+            while SymbolicBool(idx < len_var).__bool__():
+                if not space.choose_possible(arr_var != self.empty, favor_true=True):
+                    raise IgnoreAttempt("SymbolicSet in inconsistent state")
+                k = z3.Const("k" + str(idx) + space.uniq(), arr_sort.domain())
+                remaining = z3.Const("remaining" + str(idx) + space.uniq(), arr_sort)
+                space.add(arr_var == z3.Store(remaining, k, True))
+                space.add(z3.Not(z3.Select(remaining, k)))
 
-            if idx > len(iter_cache):
-                raise CrosshairInternal()
-            if idx == len(iter_cache):
-                iter_cache.append(k)
-            else:
-                space.add(k == iter_cache[idx])
+                if idx > len(iter_cache):
+                    raise CrosshairInternal()
+                if idx == len(iter_cache):
+                    iter_cache.append(k)
+                else:
+                    space.add(k == iter_cache[idx])
 
-            idx += 1
-            ch_value = smt_to_ch_value(space, self.snapshot, k, self.key_pytype)
-            if keys_on_heap:
-                # need to confirm that we do not yield two keys that are __eq__
-                for previous_value in already_yielded:
-                    if not prefer_true(ch_value != previous_value):
-                        raise IgnoreAttempt("Duplicate items in set")
-                already_yielded.append(ch_value)
-            yield ch_value
-            arr_var = remaining
-        # In this conditional, we reconcile the parallel symbolic variables for length
-        # and contents:
-        if not self.statespace.choose_possible(arr_var == self.empty, favor_true=True):
-            raise IgnoreAttempt("SmtSet in inconsistent state")
+                idx += 1
+                ch_value = smt_to_ch_value(space, self.snapshot, k, self.key_pytype)
+                if keys_on_heap:
+                    # need to confirm that we do not yield two keys that are __eq__
+                    for previous_value in already_yielded:
+                        if not prefer_true(ch_value != previous_value):
+                            raise IgnoreAttempt("Duplicate items in set")
+                    already_yielded.append(ch_value)
+                with ResumedTracing():
+                    yield ch_value
+                arr_var = remaining
+            # In this conditional, we reconcile the parallel symbolic variables for length
+            # and contents:
+            if not self.statespace.choose_possible(
+                arr_var == self.empty, favor_true=True
+            ):
+                raise IgnoreAttempt("SymbolicSet in inconsistent state")
 
     def _set_op(self, attr, other):
         # We need to check the type of other here, because builtin sets
@@ -1262,7 +1288,7 @@ class SmtSet(SmtDictOrSet, collections.abc.Set):
             raise TypeError
 
     # Hardwire some operations into abc methods
-    # (SmtBackedValue defaults these operations into
+    # (SymbolicValue defaults these operations into
     # TypeErrors, but must appear first in the mro)
     def __ge__(self, other):
         return self._set_op("__ge__", other)
@@ -1295,7 +1321,7 @@ class SmtSet(SmtDictOrSet, collections.abc.Set):
         return self._set_op("__sub__", other)
 
 
-class SmtFrozenSet(SmtSet):
+class SymbolicFrozenSet(SymbolicSet):
     def __repr__(self):
         return frozenset(self).__repr__()
 
@@ -1309,23 +1335,22 @@ class SmtFrozenSet(SmtSet):
 
 
 def process_slice_vs_symbolic_len(
-    space: StateSpace, i: slice, smt_len: z3.ExprRef, fork_on_negative_index=False
+    space: StateSpace,
+    i: Union[int, slice],
+    smt_len: z3.ExprRef,
 ) -> Union[z3.ExprRef, Tuple[z3.ExprRef, z3.ExprRef]]:
     def normalize_symbolic_index(idx) -> z3.ExprRef:
         if type(idx) is int:
             return z3.IntVal(idx) if idx >= 0 else (smt_len + z3.IntVal(idx))
-        elif fork_on_negative_index:
-            smt_idx = SmtInt._coerce_to_smt_sort(idx)
+        else:
+            smt_idx = SymbolicInt._coerce_to_smt_sort(idx)
             if idx >= 0:
                 return smt_idx
             else:
                 return smt_len + smt_idx
-        else:
-            smt_idx = SmtInt._coerce_to_smt_sort(idx)
-            return z3.If(smt_idx >= z3.IntVal(0), smt_idx, smt_len + smt_idx)
 
-    if isinstance(i, (int, SmtInt)):
-        smt_i = SmtInt._coerce_to_smt_sort(i)
+    if isinstance(i, (int, SymbolicInt)):
+        smt_i = SymbolicInt._coerce_to_smt_sort(i)
         if space.smt_fork(z3.Or(smt_i >= smt_len, smt_i < -smt_len)):
             raise IndexError(f'index "{i}" is out of range')
         return normalize_symbolic_index(i)
@@ -1338,14 +1363,28 @@ def process_slice_vs_symbolic_len(
                 )
         if step not in (None, 1):
             raise CrosshairUnsupported("slice steps not handled")  # TODO: handle this!
-        start = normalize_symbolic_index(start) if i.start is not None else z3.IntVal(0)
-        stop = normalize_symbolic_index(stop) if i.stop is not None else smt_len
+        if i.start is None:
+            start = z3.IntVal(0)
+        else:
+            start = normalize_symbolic_index(start)
+            if space.smt_fork(start < 0):
+                start = z3.IntVal(0)
+            elif space.smt_fork(smt_len < start):
+                start = smt_len
+        if i.stop is None:
+            stop = smt_len
+        else:
+            stop = normalize_symbolic_index(stop)
+            if space.smt_fork(stop < 0):
+                stop = z3.IntVal(0)
+            elif space.smt_fork(smt_len < stop):
+                stop = smt_len
         return (start, stop)
     else:
         raise TypeError("indices must be integers or slices, not " + str(type(i)))
 
 
-class SmtSequence(SmtBackedValue, collections.abc.Sequence):
+class SymbolicSequence(SymbolicValue, collections.abc.Sequence):
     def __ch_realize__(self):
         return origin_of(self.python_type)(self)
 
@@ -1356,10 +1395,10 @@ class SmtSequence(SmtBackedValue, collections.abc.Sequence):
             idx += 1
 
     def __len__(self):
-        return SmtInt(z3.Length(self.var))
+        return SymbolicInt(z3.Length(self.var))
 
     def __bool__(self):
-        return SmtBool(z3.Length(self.var) > 0).__bool__()
+        return SymbolicBool(z3.Length(self.var) > 0).__bool__()
 
     def __mul__(self, other):
         if not isinstance(other, int):
@@ -1375,7 +1414,7 @@ class SmtSequence(SmtBackedValue, collections.abc.Sequence):
         return self.__mul__(other)
 
 
-class SmtArrayBasedUniformTuple(SmtSequence):
+class SymbolicArrayBasedUniformTuple(SymbolicSequence):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
         if type(smtvar) == str:
             pass
@@ -1386,13 +1425,13 @@ class SmtArrayBasedUniformTuple(SmtSequence):
         self.val_pytype = normalize_pytype(type_arg_of(typ, 0))
         ch_types = crosshair_types_for_python_type(self.val_pytype)
         if ch_types:
-            self.ch_item_type: Optional[Type[AtomicSmtValue]] = ch_types[0]
+            self.ch_item_type: Optional[Type[AtomicSymbolicValue]] = ch_types[0]
             self.item_smt_sort = self.ch_item_type._ch_smt_sort()
         else:
             self.ch_item_type = None
             self.item_smt_sort = HeapRef
 
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
         arr_var = self._arr()
         len_var = self._len()
         self.statespace.add(len_var >= 0)
@@ -1412,10 +1451,10 @@ class SmtArrayBasedUniformTuple(SmtSequence):
         return self.var[1]
 
     def __len__(self):
-        return SmtInt(self._len())
+        return SymbolicInt(self._len())
 
     def __bool__(self) -> bool:
-        return SmtBool(self._len() != 0).__bool__()
+        return SymbolicBool(self._len() != 0).__bool__()
 
     def __eq__(self, other):
         if self is other:
@@ -1444,7 +1483,7 @@ class SmtArrayBasedUniformTuple(SmtSequence):
     def __iter__(self):
         arr_var, len_var = self.var
         idx = 0
-        while SmtBool(idx < len_var).__bool__():
+        while SymbolicBool(idx < len_var).__bool__():
             yield smt_to_ch_value(
                 self.statespace, self.snapshot, z3.Select(arr_var, idx), self.val_pytype
             )
@@ -1462,7 +1501,7 @@ class SmtArrayBasedUniformTuple(SmtSequence):
 
     def __contains__(self, other):
         space = self.statespace
-        with space.framework():
+        with NoTracing():
             if not is_heapref_sort(self.item_smt_sort):
                 smt_other = self.ch_item_type._coerce_to_smt_sort(other)
                 if smt_other is not None:
@@ -1476,7 +1515,7 @@ class SmtArrayBasedUniformTuple(SmtSequence):
                             z3.Select(self._arr(), idx) == smt_other,
                         ),
                     )
-                    return SmtBool(idx_in_range)
+                    return SymbolicBool(idx_in_range)
             # Fall back to standard equality and iteration
             for self_item in self:
                 if self_item == other:
@@ -1485,15 +1524,15 @@ class SmtArrayBasedUniformTuple(SmtSequence):
 
     def __getitem__(self, i):
         space = self.statespace
-        with space.framework():
+        with NoTracing():
             if i == slice(None, None, None):
                 return self
             idx_or_pair = process_slice_vs_symbolic_len(space, i, self._len())
             if isinstance(idx_or_pair, tuple):
                 (start, stop) = idx_or_pair
                 (myarr, mylen) = self.var
-                start = SmtInt(start)
-                stop = SmtInt(smt_min(mylen, smt_coerce(stop)))
+                start = SymbolicInt(start)
+                stop = SymbolicInt(smt_min(mylen, smt_coerce(stop)))
                 return SliceView(self, start, stop)
             else:
                 smt_result = z3.Select(self._arr(), idx_or_pair)
@@ -1505,9 +1544,11 @@ class SmtArrayBasedUniformTuple(SmtSequence):
         raise CrosshairUnsupported
 
 
-class SmtList(ShellMutableSequence, collections.abc.MutableSequence, CrossHairValue):
+class SymbolicList(
+    ShellMutableSequence, collections.abc.MutableSequence, CrossHairValue
+):
     def __init__(self, *a):
-        ShellMutableSequence.__init__(self, SmtArrayBasedUniformTuple(*a))
+        ShellMutableSequence.__init__(self, SymbolicArrayBasedUniformTuple(*a))
 
     def __ch_pytype__(self):
         return python_type(self.inner)
@@ -1519,7 +1560,7 @@ class SmtList(ShellMutableSequence, collections.abc.MutableSequence, CrossHairVa
         return other is list
 
     def __lt__(self, other):
-        if not isinstance(other, (list, SmtList)):
+        if not isinstance(other, (list, SymbolicList)):
             raise TypeError
         return super().__lt__(other)
 
@@ -1552,7 +1593,7 @@ class SmtList(ShellMutableSequence, collections.abc.MutableSequence, CrossHairVa
         raise ValueError(f"{value} is not in list")
 
 
-class SmtType(AtomicSmtValue, SmtBackedValue):
+class SymbolicType(AtomicSymbolicValue, SymbolicValue):
     _realization: Optional[Type] = None
 
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
@@ -1563,7 +1604,7 @@ class SmtType(AtomicSmtValue, SmtBackedValue):
         )
         assert type(self.pytype_cap) is type
         smt_cap = space.type_repo.get_type(self.pytype_cap)
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
         space.add(space.type_repo.smt_issubclass(self.var, smt_cap))
 
     @classmethod
@@ -1581,31 +1622,31 @@ class SmtType(AtomicSmtValue, SmtBackedValue):
         return None
 
     def _is_superclass_of_(self, other):
-        if self is SmtType:
+        if self is SymbolicType:
             return False
-        if type(other) is SmtType:
+        if type(other) is SymbolicType:
             # Prefer it this way because only _is_subcless_of_ does the type cap lowering.
             return other._is_subclass_of_(self)
         space = self.statespace
-        with space.framework():
-            coerced = SmtType._coerce_to_smt_sort(other)
+        with NoTracing():
+            coerced = SymbolicType._coerce_to_smt_sort(other)
             if coerced is None:
                 return False
-            return SmtBool(space.type_repo.smt_issubclass(coerced, self.var))
+            return SymbolicBool(space.type_repo.smt_issubclass(coerced, self.var))
 
     def _is_subclass_of_(self, other):
-        if self is SmtType:
+        if self is SymbolicType:
             return False
         space = self.statespace
-        with space.framework():
-            coerced = SmtType._coerce_to_smt_sort(other)
+        with NoTracing():
+            coerced = SymbolicType._coerce_to_smt_sort(other)
             if coerced is None:
                 return False
-            ret = SmtBool(space.type_repo.smt_issubclass(self.var, coerced))
-            if type(other) is SmtType:
+            ret = SymbolicBool(space.type_repo.smt_issubclass(self.var, coerced))
+            if type(other) is SymbolicType:
                 other_pytype = other.pytype_cap
-            elif issubclass(other, SmtBackedValue):
-                if issubclass(other, AtomicSmtValue):
+            elif issubclass(other, SymbolicValue):
+                if issubclass(other, AtomicSymbolicValue):
                     other_pytype = other._pytype()
                 else:
                     other_pytype = None
@@ -1680,29 +1721,36 @@ class LazyObject(ObjectProxy):
 
     def __deepcopy__(self, memo):
         if inside_realization():
-            return self.__ch_realize__()
-        inner = object.__getattribute__(self, "_inner")
-        if inner is _MISSING:
-            # CrossHair will deepcopy for mutation checking.
-            # That's usually bad for LazyObjects, which want to defer their
-            # realization, so we simply don't do mutation checking for these
-            # kinds of values right now.
-            return self
+            # TODO: add deepcopy here. (this breaks a few tests)
+            result = self.__ch_realize__()
         else:
-            return copy.deepcopy(inner)
+            inner = object.__getattribute__(self, "_inner")
+            if inner is _MISSING:
+                # CrossHair will deepcopy for mutation checking.
+                # That's usually bad for LazyObjects, which want to defer their
+                # realization, so we simply don't do mutation checking for these
+                # kinds of values right now.
+                result = self
+            else:
+                result = copy.deepcopy(inner)
+        memo[id(self)] = result
+        return result
 
 
-class SmtObject(LazyObject, CrossHairValue):
+class SymbolicObject(LazyObject, CrossHairValue):
     """
     An object with an unknown type.
     We lazily create a more specific smt-based value in hopes that an
     isinstance() check will be called before something is accessed on us.
-    Note that this class is not an SmtBackedValue, but its _typ and _inner
+    Note that this class is not an SymbolicValue, but its _typ and _inner
     members can be.
     """
 
+    # TODO: prefix comparison checks with type checks to encourage us to become the
+    # right type.
+
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
-        object.__setattr__(self, "_typ", SmtType(smtvar, type))
+        object.__setattr__(self, "_typ", SymbolicType(smtvar, type))
         object.__setattr__(self, "_space", context_statespace())
         object.__setattr__(self, "_varname", smtvar)
 
@@ -1723,24 +1771,24 @@ class SmtObject(LazyObject, CrossHairValue):
 
     @property
     def __class__(self):
-        return SmtObject
+        return SymbolicObject
 
     @__class__.setter
     def __class__(self, value):
         raise CrosshairUnsupported
 
 
-class SmtCallable(SmtBackedValue):
+class SymbolicCallable(SymbolicValue):
     __closure__ = None
 
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type):
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
 
     def __bool__(self):
         return True
 
     def __eq__(self, other):
-        return (self.var is other.var) if isinstance(other, SmtCallable) else False
+        return (self.var is other.var) if isinstance(other, SymbolicCallable) else False
 
     def __hash__(self):
         return id(self.var)
@@ -1814,8 +1862,8 @@ class SmtCallable(SmtBackedValue):
         return f"lambda {arg_str}: {body}"
 
 
-class SmtUniformTuple(
-    SmtArrayBasedUniformTuple, collections.abc.Sequence, collections.abc.Hashable
+class SymbolicUniformTuple(
+    SymbolicArrayBasedUniformTuple, collections.abc.Sequence, collections.abc.Hashable
 ):
     def __repr__(self):
         return tuple(self).__repr__()
@@ -1827,10 +1875,10 @@ class SmtUniformTuple(
 _SMTSTR_Z3_SORT = z3.SeqSort(z3.BitVecSort(8))
 
 
-class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
+class SymbolicStr(AtomicSymbolicValue, SymbolicSequence, AbcString):
     def __init__(self, smtvar: Union[str, z3.ExprRef], typ: Type = str):
         assert typ == str
-        SmtBackedValue.__init__(self, smtvar, typ)
+        SymbolicValue.__init__(self, smtvar, typ)
         self.item_pytype = str
 
     @classmethod
@@ -1858,7 +1906,7 @@ class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
         return self.statespace.find_model_value(self.var)
 
     def __copy__(self):
-        return SmtStr(self.var)
+        return SymbolicStr(self.var)
 
     def __repr__(self):
         return repr(self.__str__())
@@ -1867,25 +1915,24 @@ class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
         return hash(self.__str__())
 
     def __add__(self, other):
-        if isinstance(other, (SmtStr, str)):
-            return SmtStr(self.var + smt_coerce(other))
+        if isinstance(other, (SymbolicStr, str)):
+            return SymbolicStr(self.var + smt_coerce(other))
         raise TypeError
 
     def __radd__(self, other):
-        if isinstance(other, (SmtStr, str)):
-            return SmtStr(smt_coerce(other) + self.var)
+        if isinstance(other, (SymbolicStr, str)):
+            return SymbolicStr(smt_coerce(other) + self.var)
         raise TypeError
 
     def __mul__(self, other):
         space = self.statespace
-        # If repetition count is a literal, use that first:
         if isinstance(other, Integral):
             if other <= 1:
                 return self if other == 1 else ""
-            # Note that in SmtInt, we attempt string multiplication via regex.
+            # Note that in SymbolicInt, we attempt string multiplication via regex.
             # Z3 cannot do much with a symbolic regex, so we case-split on
             # the repetition count.
-            return SmtStr(z3.Concat(*[self.var for _ in range(other)]))
+            return SymbolicStr(z3.Concat(*[self.var for _ in range(other)]))
         return NotImplemented
 
     __rmul__ = __mul__
@@ -1894,8 +1941,8 @@ class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
         return self.__str__() % realize(other)
 
     def _cmp_op(self, other, op):
-        forced = force_to_smt_sort(other, SmtStr)
-        return SmtBool(op(self.var, forced))
+        forced = force_to_smt_sort(other, SymbolicStr)
+        return SymbolicBool(op(self.var, forced))
 
     def __lt__(self, other):
         return self._cmp_op(other, ops.lt)
@@ -1910,32 +1957,59 @@ class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
         return self._cmp_op(other, ops.ge)
 
     def __contains__(self, other):
-        forced = force_to_smt_sort(other, SmtStr)
-        return SmtBool(z3.Contains(self.var, forced))
+        forced = force_to_smt_sort(other, SymbolicStr)
+        return SymbolicBool(z3.Contains(self.var, forced))
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: Union[int, slice]):
         idx_or_pair = process_slice_vs_symbolic_len(
-            self.statespace,
-            i,
-            z3.Length(self.var),
-            # At present, Z3's string solver performs poorly with ite()s in indices:
-            fork_on_negative_index=True,
+            self.statespace, i, z3.Length(self.var)
         )
         if isinstance(idx_or_pair, tuple):
             (start, stop) = idx_or_pair
             smt_result = z3.Extract(self.var, start, stop - start)
         else:
             smt_result = z3.Extract(self.var, idx_or_pair, 1)
-        return SmtStr(smt_result)
+        return SymbolicStr(smt_result)
+
+    def count(self, substr, start=None, end=None):
+        sliced = self[start:end]
+        if substr == "":
+            return len(sliced) + 1
+        return len(sliced.split(substr)) - 1
+
+    def endswith(self, substr):
+        smt_substr = force_to_smt_sort(substr, SymbolicStr)
+        return SymbolicBool(z3.SuffixOf(smt_substr, self.var))
 
     def find(self, substr, start=None, end=None):
-        smt_mystr = self.var
-        smt_substr = force_to_smt_sort(substr, SmtStr)
-        if end is not None:
-            end = force_to_smt_sort(end, SmtInt)
-            smt_mystr = z3.SubString(smt_mystr, 0, end)
-        start = 0 if start is None else force_to_smt_sort(start, SmtInt)
-        return SmtInt(z3.IndexOf(smt_mystr, smt_substr, start))
+        if not isinstance(substr, str):
+            raise TypeError
+        space = self.statespace
+        smt_my_len = z3.Length(self.var)
+        if start is None and end is None:
+            smt_start = z3.IntVal(0)
+            smt_end = smt_my_len
+            smt_str = self.var
+        else:
+            (smt_start, smt_end) = process_slice_vs_symbolic_len(
+                space, slice(start, end, None), smt_my_len
+            )
+            smt_str = z3.SubString(self.var, smt_start, smt_end - smt_start)
+
+        if len(substr) == 0:
+            # Add oddity of CPython. We can find the empty string when over-slicing
+            # off the left side of the string, but not off the right:
+            # ''.find('', 3, 4) == -1
+            # ''.find('', -4, -3) == 0
+            if space.smt_fork(smt_start > smt_my_len):
+                return -1
+            else:
+                return SymbolicInt(smt_end)
+        smt_sub = force_to_smt_sort(substr, SymbolicStr)
+        if space.smt_fork(z3.Contains(smt_str, smt_sub)):
+            return SymbolicInt(z3.IndexOf(smt_str, smt_sub, 0) + smt_start)
+        else:
+            return -1
 
     def index(self, substr, start=None, end=None):
         idx = self.find(substr, start, end)
@@ -1943,44 +2017,174 @@ class SmtStr(AtomicSmtValue, SmtSequence, AbcString):
             raise ValueError
         return idx
 
-    def startswith(self, substr):
-        smt_substr = force_to_smt_sort(substr, SmtStr)
-        return SmtBool(z3.PrefixOf(smt_substr, self.var))
+    def join(self, itr):
+        return _join(self, itr, self_type=str, item_type=str)
 
-    def endswith(self, substr):
-        smt_substr = force_to_smt_sort(substr, SmtStr)
-        return SmtBool(z3.SuffixOf(smt_substr, self.var))
+    def ljust(self, width, fillchar=" "):
+        if len(fillchar) != 1:
+            raise TypeError
+        return self + fillchar * max(0, width - len(self))
+
+    def partition(self, sep: str):
+        result = self.split(sep, maxsplit=1)
+        if len(result) == 1:
+            return (self, "", "")
+        elif len(result) == 2:
+            return (result[0], sep, result[1])
+
+    def replace(self, old, new, count=-1):
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise TypeError
+        if count == 0:
+            return self
+        if self == "":
+            return new if old == "" else self
+        elif old == "":
+            return new + self[:1] + self[1:].replace(old, new, count - 1)
+
+        index = self.find(old)
+        if index == -1:
+            return self
+        return (
+            self[:index] + new + self[index + len(old) :].replace(old, new, count - 1)
+        )
+
+    def rfind(self, substr, start=None, end=None) -> Union[int, SymbolicInt]:
+        if not isinstance(substr, str):
+            raise TypeError
+        space = self.statespace
+        smt_my_len = z3.Length(self.var)
+        if start is None and end is None:
+            smt_start = z3.IntVal(0)
+            smt_end = smt_my_len
+            smt_str = self.var
+        else:
+            (smt_start, smt_end) = process_slice_vs_symbolic_len(
+                space, slice(start, end, None), smt_my_len
+            )
+            smt_str = z3.SubString(self.var, smt_start, smt_end - smt_start)
+
+        if len(substr) == 0:
+            # Add oddity of CPython. We can find the empty string when over-slicing
+            # off the left side of the string, but not off the right:
+            # ''.rfind('', 3, 4) == -1
+            # ''.rfind('', -4, -3) == 0
+            if space.smt_fork(smt_start > smt_my_len):
+                return -1
+            else:
+                return SymbolicInt(smt_end)
+        smt_sub = force_to_smt_sort(substr, SymbolicStr)
+        if space.smt_fork(z3.Contains(smt_str, smt_sub)):
+            uniq = space.uniq()
+            # Divide my contents into 4 concatenated parts:
+            prefix = SymbolicStr(f"prefix_{uniq}")
+            match1 = SymbolicStr(f"match1_{uniq}")
+            match_tail = SymbolicStr(f"match_tail_{uniq}")
+            suffix = SymbolicStr(f"suffix_{uniq}")
+            space.add(z3.Length(match1.var) == 1)
+            space.add(smt_sub == z3.Concat(match1.var, match_tail.var))
+            space.add(smt_str == z3.Concat(prefix.var, smt_sub, suffix.var))
+            space.add(
+                z3.Not(z3.Contains(z3.Concat(match_tail.var, suffix.var), smt_sub))
+            )
+            return SymbolicInt(smt_start + z3.Length(prefix.var))
+        else:
+            return -1
+
+    def rindex(self, substr, start=None, end=None):
+        result = self.rfind(substr, start, end)
+        if result == -1:
+            raise ValueError
+        else:
+            return result
+
+    def rjust(self, width, fillchar=" "):
+        if len(fillchar) != 1:
+            raise TypeError
+        return fillchar * max(0, width - len(self)) + self
+
+    def rpartition(self, sep: str):
+        result = self.rsplit(sep, maxsplit=1)
+        if len(result) == 1:
+            return ("", "", self)
+        elif len(result) == 2:
+            return (result[0], sep, result[1])
+
+    def rsplit(self, sep: Optional[str] = None, maxsplit: int = -1):
+        if sep is None:
+            return self.__str__().rsplit(sep=sep, maxsplit=maxsplit)
+        if not isinstance(sep, str):
+            raise TypeError
+        if not isinstance(maxsplit, Integral):
+            raise TypeError
+        if len(sep) == 0:
+            raise ValueError("empty separator")
+        smt_sep = force_to_smt_sort(sep, SymbolicStr)
+        if maxsplit == 0:
+            return [self]
+        last_occurence = self.rfind(sep)
+        if last_occurence == -1:
+            return [self]
+        new_maxsplit = -1 if maxsplit < 0 else maxsplit - 1
+        remaining = self[: cast(int, last_occurence)]
+        ret = self[:last_occurence].rsplit(sep, new_maxsplit)
+        index_after = len(sep) + last_occurence
+        ret.append(self[index_after:])
+        return ret
 
     def split(self, sep: Optional[str] = None, maxsplit: int = -1):
         if sep is None:
             return self.__str__().split(sep=sep, maxsplit=maxsplit)
-        smt_sep = force_to_smt_sort(sep, SmtStr)
+        if not isinstance(sep, str):
+            raise TypeError
         if not isinstance(maxsplit, Integral):
             raise TypeError
+        if len(sep) == 0:
+            raise ValueError("empty separator")
+        smt_sep = force_to_smt_sort(sep, SymbolicStr)
         if maxsplit == 0:
             return [self]
-        first_occurance = SmtInt(z3.IndexOf(self.var, smt_sep, 0))
+        first_occurance = SymbolicInt(z3.IndexOf(self.var, smt_sep, 0))
         if first_occurance == -1:
             return [self]
         ret = [self[: cast(int, first_occurance)]]
-        new_maxsplit = -1 if maxsplit == -1 else maxsplit - 1
-        ret.extend(self[first_occurance + 1 :].split(sep=sep, maxsplit=new_maxsplit))
+        new_maxsplit = -1 if maxsplit < 0 else maxsplit - 1
+        ret.extend(
+            self[first_occurance + len(sep) :].split(sep=sep, maxsplit=new_maxsplit)
+        )
         return ret
+
+    def startswith(self, substr, start=None, end=None):
+        if isinstance(substr, tuple):
+            return any(self.startswith(s, start, end) for s in substr)
+        smt_substr = force_to_smt_sort(substr, SymbolicStr)
+        if start is not None or end is not None:
+            return self[start:end].startswith(substr)
+        return SymbolicBool(z3.PrefixOf(smt_substr, self.var))
+
+    def zfill(self, width):
+        if not isinstance(width, int):
+            raise TypeError
+        fill_length = max(0, width - len(self))
+        if self.startswith("+") or self.startswith("-"):
+            return self[0] + "0" * fill_length + self[1:]
+        else:
+            return "0" * fill_length + self
 
 
 _CACHED_TYPE_ENUMS: Dict[FrozenSet[type], z3.SortRef] = {}
 
 
 _PYTYPE_TO_WRAPPER_TYPE = {
-    bool: (SmtBool,),
-    int: (SmtInt,),
-    float: (SmtFloat,),
-    str: (SmtStr,),
-    type: (SmtType,),
+    bool: (SymbolicBool,),
+    int: (SymbolicInt,),
+    float: (SymbolicFloat,),
+    str: (SymbolicStr,),
+    type: (SymbolicType,),
 }
 
 # Type ignore pending https://github.com/python/mypy/issues/6864
-_PYTYPE_TO_WRAPPER_TYPE[collections.abc.Callable] = (SmtCallable,)  # type:ignore
+_PYTYPE_TO_WRAPPER_TYPE[collections.abc.Callable] = (SymbolicCallable,)  # type:ignore
 
 _WRAPPER_TYPE_TO_PYTYPE = dict(
     (v, k) for (k, vs) in _PYTYPE_TO_WRAPPER_TYPE.items() for v in vs
@@ -2040,14 +2244,14 @@ def make_dictionary(creator, key_type=Any, value_type=Any):
 
         space.defer_assumption("dict keys are unique", ensure_keys_are_unique)
         return SimpleDict(kv)
-    return ShellMutableMap(SmtDict(varname, creator.pytype))
+    return ShellMutableMap(SymbolicDict(varname, creator.pytype))
 
 
 def make_tuple(creator, *type_args):
     if not type_args:
         type_args = (object, ...)  # type: ignore
     if len(type_args) == 2 and type_args[1] == ...:
-        return SmtUniformTuple(creator.varname, creator.pytype)
+        return SymbolicUniformTuple(creator.varname, creator.pytype)
     else:
         return tuple(
             proxy_for_type(t, creator.varname + "_at_" + str(idx), allow_subtypes=True)
@@ -2085,10 +2289,10 @@ _TRUE_BUILTINS: Any = _BuiltinsCopy()
 _TRUE_BUILTINS.__dict__.update(orig_builtins.__dict__)
 
 
-def fork_on_useful_attr_names(obj: object, name: SmtStr) -> None:
+def fork_on_useful_attr_names(obj: object, name: SymbolicStr) -> None:
     # This function appears to do nothing at all!
     # It exists to force a symbolic string into useful candidate states.
-    with context_statespace().framework():
+    with NoTracing():
         obj = realize(obj)
         for key in reversed(dir(obj)):
             # We use reverse() above to handle __dunder__ methods last.
@@ -2106,7 +2310,8 @@ _orig_eval = orig_builtins.eval
 
 
 def _eval(expr: str, _globals=None, _locals=None) -> object:
-    calling_frame = sys._getframe(2)
+    # This is fragile: consider detecting _crosshair_wrapper(s):
+    calling_frame = sys._getframe(1)
     _globals = calling_frame.f_globals if _globals is None else realize(_globals)
     _locals = calling_frame.f_locals if _locals is None else realize(_locals)
     return _orig_eval(realize(expr), _globals, _locals)
@@ -2116,9 +2321,9 @@ _orig_format = orig_builtins.format
 
 
 def _format(obj: object, format_spec: str = "") -> str:
-    if isinstance(obj, SmtBackedValue):
+    if isinstance(obj, SymbolicValue):
         obj = realize(obj)
-    if type(format_spec) is SmtStr:
+    if type(format_spec) is SymbolicStr:
         format_spec = realize(format_spec)
     return _orig_format(obj, format_spec)
 
@@ -2127,7 +2332,7 @@ _orig_getattr = orig_builtins.getattr
 
 
 def _getattr(obj: object, name: str, default=_MISSING) -> object:
-    if type(name) is SmtStr:
+    if type(name) is SymbolicStr:
         fork_on_useful_attr_names(obj, name)  # type:ignore
         name = realize(name)
     if default is _MISSING:
@@ -2140,7 +2345,7 @@ _orig_hasattr = orig_builtins.hasattr
 
 
 def _hasattr(obj: object, name: str) -> bool:
-    if type(name) is SmtStr:
+    if type(name) is SymbolicStr:
         fork_on_useful_attr_names(obj, name)  # type:ignore
         name = realize(name)
     return _orig_hasattr(obj, name)
@@ -2164,42 +2369,43 @@ def _hash(obj: Hashable) -> int:
 # Trick the system into believing that symbolic values are
 # native types.
 def _issubclass(subclass, superclass):
-    if not isinstance(subclass, type):
-        raise TypeError("issubclass() arg 1 must be a class")
-    subclass_is_special = hasattr(subclass, "_is_subclass_of_")
-    if not subclass_is_special:
-        # We could also check superclass(es) for a special method, but
-        # the native function won't return True in those cases anyway.
-        try:
-            ret = _TRUE_BUILTINS.issubclass(subclass, superclass)
-            if ret:
+    with NoTracing():
+        if not isinstance(subclass, (type, SymbolicType)):
+            raise TypeError("issubclass() arg 1 must be a class")
+        subclass_is_special = hasattr(subclass, "_is_subclass_of_")
+        if not subclass_is_special:
+            # We could also check superclass(es) for a special method, but
+            # the native function won't return True in those cases anyway.
+            try:
+                ret = _TRUE_BUILTINS.issubclass(subclass, superclass)
+                if ret:
+                    return True
+            except TypeError:
+                pass
+        if type(superclass) is tuple:
+            for cur_super in superclass:
+                if _issubclass(subclass, cur_super):
+                    return True
+            return False
+        if not isinstance(superclass, (type, SymbolicType)):
+            raise TypeError("issubclass() arg 2 must be a class or tuple of classes")
+        if hasattr(superclass, "_is_superclass_of_"):
+            method = superclass._is_superclass_of_
+            if (
+                method(subclass)
+                if hasattr(method, "__self__")
+                else method(subclass, superclass)
+            ):
                 return True
-        except TypeError:
-            pass
-    if type(superclass) is tuple:
-        for cur_super in superclass:
-            if _issubclass(subclass, cur_super):
+        if subclass_is_special:
+            method = subclass._is_subclass_of_
+            if (
+                method(superclass)
+                if hasattr(method, "__self__")
+                else method(subclass, superclass)
+            ):
                 return True
         return False
-    if not isinstance(superclass, type):
-        raise TypeError("issubclass() arg 2 must be a class or tuple of classes")
-    if hasattr(superclass, "_is_superclass_of_"):
-        method = superclass._is_superclass_of_
-        if (
-            method(subclass)
-            if hasattr(method, "__self__")
-            else method(subclass, superclass)
-        ):
-            return True
-    if subclass_is_special:
-        method = subclass._is_subclass_of_
-        if (
-            method(superclass)
-            if hasattr(method, "__self__")
-            else method(subclass, superclass)
-        ):
-            return True
-    return False
 
 
 def _isinstance(obj, types):
@@ -2225,55 +2431,33 @@ def _len(l):
 
 
 def _max(*values, key=lambda x: x, default=_MISSING):
-    if len(values) <= 1:
-        if not values:
-            raise TypeError("expected 1 argument, got 0")
-        if not is_iterable(values[0]):
-            raise TypeError("object is not iterable")
-        values = values[0]
-    return _max_iter(values, key=key, default=default)
-
-
-def _max_iter(
-    values: Iterable[_T],
-    *,
-    key: Callable = lambda x: x,
-    default: Union[_Missing, _VT] = _MISSING,
-) -> _T:
-    """
-    pre: bool(values) or default is not _MISSING
-    post[]::
-      (_ in values) if default is _MISSING else True
-      ((_ in values) or (_ is default)) if default is not _MISSING else True
-    """
-    kw = {} if default is _MISSING else {"default": default}
-    return _TRUE_BUILTINS.max(values, key=key, **kw)
+    # TODO: min() and max() patches do nothing useful at present. Just remove?
+    with NoTracing():
+        if len(values) <= 1:
+            if not values:
+                raise TypeError("expected 1 argument, got 0")
+            if not is_iterable(values[0]):
+                raise TypeError("object is not iterable")
+            values = values[0]
+    if default is _MISSING:
+        return _TRUE_BUILTINS.max(values, key=key)
+    else:
+        return _TRUE_BUILTINS.max(values, key=key, default=default)
 
 
 def _min(*values, key=lambda x: x, default=_MISSING):
-    if len(values) <= 1:
-        if not values:
-            raise TypeError("expected 1 argument, got 0")
-        if not is_iterable(values[0]):
-            raise TypeError("object is not iterable")
-        values = values[0]
-    return _min_iter(values, key=key, default=default)
-
-
-def _min_iter(
-    values: Iterable[_T],
-    *,
-    key: Callable = lambda x: x,
-    default: Union[_Missing, _VT] = _MISSING,
-) -> _T:
-    """
-    pre: bool(values) or default is not _MISSING
-    post[]::
-      (_ in values) if default is _MISSING else True
-      ((_ in values) or (_ is default)) if default is not _MISSING else True
-    """
-    kw = {} if default is _MISSING else {"default": default}
-    return _TRUE_BUILTINS.min(values, key=key, **kw)
+    # TODO: min() and max() patches do nothing useful at present. Just remove?
+    with NoTracing():
+        if len(values) <= 1:
+            if not values:
+                raise TypeError("expected 1 argument, got 0")
+            if not is_iterable(values[0]):
+                raise TypeError("object is not iterable")
+            values = values[0]
+    if default is _MISSING:
+        return _TRUE_BUILTINS.min(values, key=key)
+    else:
+        return _TRUE_BUILTINS.min(values, key=key, default=default)
 
 
 _orig_ord = orig_builtins.ord
@@ -2318,9 +2502,9 @@ _orig_setattr = orig_builtins.setattr
 
 def _setattr(obj: object, name: str, value: object) -> None:
     # TODO: we could do symbolic stuff like getattr does here!
-    if isinstance(obj, SmtBackedValue):
+    if isinstance(obj, SymbolicValue):
         obj = realize(obj)
-    if type(name) is SmtStr:
+    if type(name) is SymbolicStr:
         name = realize(name)
     return _orig_setattr(obj, name, value)
 
@@ -2363,16 +2547,54 @@ def _list_repr(self):
     return "[" + ", ".join(repr(x) for x in self) + "]"
 
 
-def _str_join(self, itr) -> str:
-    # An obviously slow implementation, but describable in terms of
-    # string concatenation, which we can do symbolically.
-    # Realizes the length of the list asrgument but not the contents.
-    result = ""
+def _join(self: _T, itr: Sequence, self_type: Type[_T], item_type: Type) -> _T:
+    # An slow implementation of join for str/bytes, but describable in terms of
+    # concatenation, which we can do symbolically.
+    # Realizes the length of the argument but not the contents.
+    if not isinstance(self, self_type):
+        raise TypeError
+    result = self_type()
     for idx, item in enumerate(itr):
+        if not isinstance(item, item_type):
+            raise TypeError
         if idx > 0:
-            result = result + self
+            result = result + self  # type: ignore
         result = result + item
     return result
+
+
+def _str_join(self, itr) -> str:
+    return _join(self, itr, self_type=str, item_type=str)
+
+
+def _bytes_join(self, itr) -> str:
+    return _join(self, itr, self_type=bytes, item_type=collections.abc.ByteString)
+
+
+def _bytearray_join(self, itr) -> str:
+    return _join(self, itr, self_type=bytearray, item_type=collections.abc.ByteString)
+
+
+def _str_startswith(self, substr, start=None, end=None) -> bool:
+    if not isinstance(self, str):
+        raise TypeError
+    # Handle native values with native implementation:
+    if type(substr) is str:
+        return self.startswith(substr, start, end)
+    if type(substr) is tuple:
+        if all(type(i) is str for i in substr):
+            return self.startswith(substr, start, end)
+    symbolic_self = SymbolicStr(SymbolicStr._smt_promote_literal(self))
+    return symbolic_self.startswith(substr, start, end)
+
+
+def _str_contains(self: str, other: Union[str, SymbolicStr]) -> bool:
+    if not isinstance(self, str):
+        raise TypeError
+    if not isinstance(other, SymbolicStr):
+        return self.__contains__(other)
+    symbolic_self = SymbolicStr(SymbolicStr._smt_promote_literal(self))
+    return symbolic_self.__contains__(other)
 
 
 #
@@ -2390,22 +2612,22 @@ def make_registrations():
     # Types modeled in the SMT solver:
 
     register_type(NoneType, lambda *a: None)
-    register_type(bool, make_optional_smt(SmtBool))
-    register_type(int, make_optional_smt(SmtInt))
-    register_type(float, make_optional_smt(SmtFloat))
-    register_type(str, make_optional_smt(SmtStr))
-    register_type(list, make_optional_smt(SmtList))
+    register_type(bool, make_optional_smt(SymbolicBool))
+    register_type(int, make_optional_smt(SymbolicInt))
+    register_type(float, make_optional_smt(SymbolicFloat))
+    register_type(str, make_optional_smt(SymbolicStr))
+    register_type(list, make_optional_smt(SymbolicList))
     register_type(dict, make_dictionary)
     register_type(tuple, make_tuple)
     register_type(set, make_set)
-    register_type(frozenset, make_optional_smt(SmtFrozenSet))
-    register_type(type, make_optional_smt(SmtType))
-    register_type(collections.abc.Callable, make_optional_smt(SmtCallable))
+    register_type(frozenset, make_optional_smt(SymbolicFrozenSet))
+    register_type(type, make_optional_smt(SymbolicType))
+    register_type(collections.abc.Callable, make_optional_smt(SymbolicCallable))
 
     # Most types are not directly modeled in the solver, rather they are built
     # on top of the modeled types. Such types are enumerated here:
 
-    register_type(object, lambda p: SmtObject(p.varname, p.pytype))
+    register_type(object, lambda p: SymbolicObject(p.varname, p.pytype))
     register_type(complex, lambda p: complex(p(float, "_real"), p(float, "_imag")))
     register_type(
         slice,
@@ -2441,7 +2663,7 @@ def make_registrations():
     register_type(
         typing.IO, lambda p, t=Any: p(BinaryIO) if t == "bytes" else p(TextIO)
     )
-    # TODO: StringIO (and BytesIO) won't accept SmtStr writes.
+    # TODO: StringIO (and BytesIO) won't accept SymbolicStr writes.
     # Consider clean symbolic implementations of these.
     register_type(typing.TextIO, lambda p: io.StringIO(str(p(str))))
 
@@ -2496,16 +2718,23 @@ def make_registrations():
         "rstrip",
         "split",
         "splitlines",
-        "startswith",
         "strip",
         "translate",
         "zfill",
     ]:
         orig_impl = getattr(orig_builtins.str, name)
         register_patch(orig_builtins.str, with_realized_args(orig_impl), name)
+        bytes_orig_impl = getattr(orig_builtins.bytes, name, None)
+        if bytes_orig_impl is not None:
+            register_patch(
+                orig_builtins.bytes, with_realized_args(bytes_orig_impl), name
+            )
 
-    orig_join = orig_builtins.str.join
+    register_patch(orig_builtins.str, _str_startswith, "startswith")
+    register_patch(orig_builtins.str, _str_contains, "__contains__")
     register_patch(orig_builtins.str, _str_join, "join")
+    register_patch(orig_builtins.bytes, _bytes_join, "join")
+    register_patch(orig_builtins.bytearray, _bytearray_join, "join")
 
     # TODO: override str.__new__ to make symbolic strings
 
@@ -2519,6 +2748,11 @@ def make_registrations():
         orig_builtins.int,
         with_realized_args(orig_builtins.int.from_bytes),
         "from_bytes",
+    )
+    register_patch(
+        orig_builtins,
+        with_realized_args(orig_builtins.int),
+        "int",
     )
 
     # Patches on float

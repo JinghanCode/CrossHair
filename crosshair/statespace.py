@@ -27,7 +27,10 @@ from crosshair.util import IdentityWrapper
 from crosshair.util import PathTimeout
 from crosshair.util import UnknownSatisfiability
 from crosshair.condition_parser import ConditionExpr
-from crosshair.type_repo import SmtTypeRepository
+from crosshair.tracers import COMPOSITE_TRACER
+from crosshair.tracers import NoTracing
+from crosshair.tracers import ResumedTracing
+from crosshair.type_repo import SymbolicTypeRepository
 
 
 @functools.total_ordering
@@ -150,6 +153,7 @@ class NotDeterministic(Exception):
 real_getattr = builtins.getattr
 
 _THREAD_LOCALS = threading.local()
+_THREAD_LOCALS.space = None
 
 
 class StateSpaceContext:
@@ -169,35 +173,17 @@ class StateSpaceContext:
 
 
 def optional_context_statespace() -> Optional["StateSpace"]:
-    return real_getattr(_THREAD_LOCALS, "space", None)
+    return _THREAD_LOCALS.space
 
 
 def context_statespace() -> "StateSpace":
     space = _THREAD_LOCALS.space
-    assert space is not None, "Not in a state space context"
+    assert space is not None
     return space
 
 
 def newrandom():
     return random.Random(1801243388510242075)
-
-
-class WithFrameworkCode:
-    def __init__(self, space: "StateSpace", new_setting: bool = True):
-        self.space = space
-        self.previous = None
-        self.new_setting = new_setting
-
-    def __enter__(self):
-        space = self.space
-        assert self.previous is None  # (this context is not re-entrant)
-        self.previous = space.running_framework_code
-        space.running_framework_code = self.new_setting
-
-    def __exit__(self, exc_type, exc_value, tb):
-        assert self.previous is not None
-        self.space.running_framework_code = self.previous
-        return False
 
 
 class NodeLike:
@@ -408,7 +394,9 @@ class ParallelNode(RandomizedBinaryPathNode):
         # it's unclear whether we want to just add stats here:
         self._stats = StateSpaceCounter(positive.stats() + negative.stats())
         return merge_node_results(
-            positive.get_result(), pos_exhausted and neg_exhausted, negative
+            positive.get_result(),
+            pos_exhausted and neg_exhausted,  # TODO: pos_exh seems unnecessary?
+            negative,
         )
 
     def false_probability(self) -> float:
@@ -550,18 +538,12 @@ class StateSpace:
         self.running_framework_code = False
         self.heaps: List[List[Tuple[z3.ExprRef, Type, object]]] = [[]]
         self.next_uniq = 1
-        self.type_repo = SmtTypeRepository(self.solver)
+        self.type_repo = SymbolicTypeRepository(self.solver)
 
         self.execution_deadline = execution_deadline
         self._random = search_root._random
         _, self.search_position = search_root.choose()
         self._deferred_assumptions = []
-
-    def framework(self) -> ContextManager:
-        return WithFrameworkCode(self)
-
-    def unframework(self) -> ContextManager:
-        return WithFrameworkCode(self, False)
 
     def current_snapshot(self) -> SnapshotRef:
         return SnapshotRef(len(self.heaps) - 1)
@@ -601,8 +583,11 @@ class StateSpace:
         self.search_position = next_node
         return ret
 
+    def is_possible(self, expr: z3.ExprRef) -> bool:
+        return solver_is_sat(self.solver, expr)
+
     def choose_possible(self, expr: z3.ExprRef, favor_true=False) -> bool:
-        with self.framework():
+        with NoTracing():
             if time.monotonic() > self.execution_deadline:
                 debug(
                     "Path execution timeout after making ",
@@ -626,12 +611,14 @@ class StateSpace:
                 node.statehash = statedesc
             else:
                 if node.statehash != statedesc:
-                    debug(self.choices_made)
                     debug(" *** Begin Not Deterministic Debug *** ")
                     debug("     First state: ", len(node.statehash))
                     debug(node.statehash)
                     debug("     Current state: ", len(statedesc))
                     debug(statedesc)
+                    debug("     Decision points prior to this:")
+                    for choice in self.choices_made:
+                        debug("      ", choice)
                     debug("     Stack Diff: ")
                     import difflib
 
@@ -654,7 +641,7 @@ class StateSpace:
             return choose_true
 
     def find_model_value(self, expr: z3.ExprRef) -> object:
-        with self.framework():
+        with NoTracing():
             while True:
                 if self.search_position.is_stem():
                     self.search_position = self.search_position.grow_into(
@@ -698,7 +685,7 @@ class StateSpace:
         proxy_generator: Callable[[Type], object],
         snapshot: SnapshotRef = SnapshotRef(-1),
     ) -> object:
-        with self.framework():
+        with NoTracing():
             for (curref, curtyp, curval) in itertools.chain(*self.heaps[snapshot:]):
                 could_match = dynamic_typing.unify(curtyp, typ)
                 if not could_match:

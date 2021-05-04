@@ -14,7 +14,7 @@ from setuptools import setup, find_packages  # type: ignore
 # the pre-commit checks through check_init_and_setup_coincide.py.
 setup(
     name="crosshair-tool",
-    version="0.0.11",  #  Update this in crosshair/__init__.py too
+    version="0.0.13",  #  Update this in crosshair/__init__.py too
     author="Phillip Schanely",
     author_email="pschanely+vE7F@gmail.com",
     packages=find_packages(),
@@ -42,8 +42,6 @@ setup(
     extras_require={
         "dev": [
             "black==20.8b1",
-            "codecov",
-            "coverage",
             "flake8",
             "icontract",
             "mypy>=0.800",

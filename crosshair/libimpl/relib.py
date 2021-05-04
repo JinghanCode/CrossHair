@@ -4,7 +4,7 @@ from typing import *
 from sre_parse import ANY, AT, BRANCH, IN, LITERAL, RANGE, SUBPATTERN  # type: ignore
 from sre_parse import MAX_REPEAT, MAXREPEAT  # type: ignore
 from sre_parse import CATEGORY, CATEGORY_DIGIT  # type: ignore
-from sre_parse import AT_END_STRING  # type: ignore
+from sre_parse import AT_END, AT_END_STRING  # type: ignore
 from sre_parse import parse
 
 
@@ -13,9 +13,9 @@ import z3  # type: ignore
 from crosshair import debug, register_patch, StateSpace
 from crosshair import realize, with_realized_args, IgnoreAttempt
 
-from crosshair.libimpl.builtinslib import SmtInt, SmtStr
+from crosshair.libimpl.builtinslib import SymbolicInt, SymbolicStr
 from crosshair.util import is_iterable
-
+from crosshair.util import CrosshairUnsupported
 
 # TODO: test _Match methods
 # TODO: SUBPATTERN
@@ -101,7 +101,7 @@ def single_char_regex(parsed: Tuple[object, Any], flags: int) -> Optional[z3.Exp
 
 class _Match:
     def __init__(
-        self, groups: List[Tuple[Optional[str], int, Union[int, SmtInt]]]
+        self, groups: List[Tuple[Optional[str], int, Union[int, SymbolicInt]]]
     ):  # (name, start, end)
         self._groups = groups
         self.lastindex = None
@@ -132,11 +132,19 @@ class _Match:
         groups[0] = (name, start, suffix_match._groups[0][2])
         return _Match(groups)
 
+    def _idx_for_group_name(self, group_name: str) -> int:
+        for idx, triple in enumerate(self._groups):
+            if triple[0] == group_name:
+                return idx
+        raise IndexError
+
     def group(self, *nums):
         if not nums:
             nums = (0,)
         ret = []
         for num in nums:
+            if isinstance(num, str):
+                num = self._idx_for_group_name(num)
             if self._groups[num] is None:
                 ret.append(None)
             else:
@@ -315,11 +323,10 @@ def _internal_match_patterns(
                 offset,
             )
     elif op is AT:
-        if arg is AT_END_STRING:
-            if re.MULTILINE & flags:
+        if arg in (AT_END, AT_END_STRING):
+            if arg is AT_END and re.MULTILINE & flags:
                 raise ReUnhandled("Multiline match with AT_END_STRING")
-            else:
-                return fork_on(matchstr == z3.StringVal(""), 0)
+            return fork_on(matchstr == z3.StringVal(""), 0)
     elif op is SUBPATTERN:
         (groupnum, _a, _b, subpatterns) = arg
         if (_a, _b) != (0, 0):
@@ -374,7 +381,7 @@ _orig_match = re.Pattern.match
 
 
 def _match(self, string, pos=0, endpos=None):
-    if type(string) is SmtStr:
+    if type(string) is SymbolicStr:
         try:
             return _match_pattern(self, self.pattern, string, pos, endpos)
         except ReUnhandled as e:
@@ -389,7 +396,7 @@ _orig_fullmatch = re.Pattern.fullmatch
 
 
 def _fullmatch(self, string, pos=0, endpos=None):
-    if type(string) is SmtStr:
+    if type(string) is SymbolicStr:
         try:
             return _match_pattern(self, self.pattern + r"\Z", string, pos, endpos)
         except ReUnhandled as e:

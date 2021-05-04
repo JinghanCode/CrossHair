@@ -3,18 +3,19 @@
 # CrossHair
 
 [![Join the chat at https://gitter.im/Cross_Hair/Lobby](https://badges.gitter.im/Cross_Hair/Lobby.svg)](https://gitter.im/Cross_Hair/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-[![codecov](https://codecov.io/gh/pschanely/CrossHair/branch/master/graph/badge.svg)](https://codecov.io/gh/pschanely/CrossHair)
 [![Check status](https://github.com/pschanely/CrossHair/workflows/Check/badge.svg)](https://github.com/pschanely/CrossHair/actions?query=workflow%3ACheck)
 
 An analysis tool for Python that blurs the line between testing and 
 type systems.
 
 > **_THE LATEST NEWS:_**  
-[Marko Ristin] just published an early VS Code extension for CrossHair!
-Install it from the [VS Code Marketplace].
+[Marko Ristin] just published **several** new [IDE integrations] for CrossHair,
+including plugins for [VS Code] and [PyCharm].
 
 [Marko Ristin]: https://github.com/mristin
-[VS Code Marketplace]: https://marketplace.visualstudio.com/items?itemName=mristin.crosshair-vscode
+[IDE integrations]: https://crosshair.readthedocs.io/en/latest/ide_integrations.html
+[VS Code]: https://marketplace.visualstudio.com/items?itemName=mristin.crosshair-vscode
+[PyCharm]: https://plugins.jetbrains.com/plugin/16266-crosshair-pycharm
 
 
 If you have a function with

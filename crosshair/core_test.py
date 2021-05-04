@@ -10,6 +10,7 @@ from typing import *
 import pytest  # type: ignore
 
 from crosshair.core import get_constructor_params
+from crosshair.core import proxy_class_as_concrete
 from crosshair.core import proxy_class_as_masquerade
 from crosshair.core import run_checkables
 from crosshair.core_and_libs import *
@@ -25,14 +26,13 @@ from crosshair.test_util import check_post_err
 from crosshair.test_util import check_fail
 from crosshair.test_util import check_unknown
 from crosshair.test_util import check_messages
+from crosshair.tracers import NoTracing
 from crosshair import type_repo
 from crosshair.util import debug
 from crosshair.util import set_debug
+from crosshair.util import CrosshairUnsupported
 
 
-#
-#
-#
 #
 #
 #
@@ -336,6 +336,10 @@ class ProxiedObjectTest(unittest.TestCase):
             self.assertIsNot(poke1.x, poke2.x)
             self.assertNotEqual(str(poke1.x.var), str(poke2.x.var))
 
+    def test_masquerade_without_type_hints(self) -> None:
+        with self.assertRaises(CrosshairUnsupported):
+            proxy_class_as_masquerade(Cat, "cat")
+
     def test_proxy_alone(self) -> None:
         def f(pokeable: Pokeable) -> None:
             """
@@ -371,6 +375,40 @@ class ProxiedObjectTest(unittest.TestCase):
         # pydantic sets __signature__ on the class, so we look for that as well as on
         # __init__ (see https://github.com/samuelcolvin/pydantic/pull/1034)
         self.assertEqual(*check_fail(f))
+
+
+def test_immutable_concrete_proxy():
+    class Penguin:
+        _can_swim: bool
+
+        def __init__(self):
+            self._can_swim = True
+
+    class ImmutablePenguin(Penguin):
+        # This hash definition signals immutability to CrossHair
+        def __hash__(self):
+            return self._can_swim
+
+    with standalone_statespace as space:
+        with NoTracing():  # (because this function resumes tracing)
+            mut = proxy_class_as_concrete(Penguin, "mut")
+            immut = proxy_class_as_concrete(ImmutablePenguin, "immut")
+        # `can_swim` is locked to True in the immutable version, but
+        # can be either in the mutable case.
+        assert space.is_possible((mut._can_swim == False).var)
+        assert space.is_possible((mut._can_swim == True).var)
+        assert immut._can_swim is True
+
+
+def test_concrete_proxy_with_bad_hash():
+    class Penguin:
+        def __hash__(self):
+            return 42 / 0
+
+    with standalone_statespace as space:
+        with NoTracing():  # (because this function resumes tracing)
+            p = proxy_class_as_concrete(Penguin, "p")
+            assert type(p) is object
 
 
 class ObjectsTest(unittest.TestCase):
@@ -856,10 +894,10 @@ class BehaviorsTest(unittest.TestCase):
         # CrossHair will sometimes "short-circuit" functions, in hopes that the
         # function body isn't required to prove the postcondition.
         # This is an example of such a case.
-        def f(x: str, y: str) -> int:
+        def f(x: str) -> int:
             """ post: _ == 0 """
             a = hash(x)
-            b = hash(y)
+            b = 7
             # This is zero no matter what the hashes are:
             return (a + b) - (b + a)
 
@@ -967,7 +1005,7 @@ class BehaviorsTest(unittest.TestCase):
 
         self.assertEqual(*check_unknown(f))
 
-    def test_fallback_when_regex_is_used(self) -> None:
+    def test_unrelated_regex(self) -> None:
         def f(s: str) -> bool:
             """ post: True """
             return bool(re.match(r"(\d+)", s))
@@ -1067,7 +1105,7 @@ if icontract:
             self.assertEqual(
                 *check_exec_err(
                     outerfn,
-                    message_prefix="ViolationError",
+                    message_prefix="PreconditionFailed",
                     optionset=AnalysisOptionSet(analysis_kind=[AnalysisKind.icontract]),
                 )
             )

@@ -38,82 +38,91 @@ That's how CrossHair explores different paths through your function.
 
 These special CrossHair objects hold one or more Z3 expressions which are used in the Z3
 solver.
-Here are some examples:
 
-+-------------------------------------------------------------+---------------------------------------------+------------------------------------------------------+
-| When your function takes a parameter with this python type, | we supply an object of this CrossHair type, | which holds an expression with this Z3 sort:         |
-+=============================================================+=============================================+======================================================+
-| ``int``                                                     | ``SmtInt``                                  | ``IntSort()``                                        |
-+-------------------------------------------------------------+---------------------------------------------+------------------------------------------------------+
-| ``bool``                                                    | ``SmtBool``                                 | ``BoolSort()``                                       |
-+-------------------------------------------------------------+---------------------------------------------+------------------------------------------------------+
-| ``str``                                                     | ``SmtStr``                                  | ``StringSort()``                                     |
-+-------------------------------------------------------------+---------------------------------------------+------------------------------------------------------+
-| ``dict``                                                    | ``SmtDict``                                 | ``ArraySort(K, V)`` and ``IntSort()`` for the length |
-+-------------------------------------------------------------+---------------------------------------------+------------------------------------------------------+
+When your function takes a parameter with some python type (say, ``int``) CrossHair will
+supply an object of a custom CrossHair type (``SymbolicInt``), which holds a Z3
+expression having some Z3 sort (``IntSort()``). Here are some examples:
+
++-------------+------------------+------------------------------------------------------+
+| Python Type | CrossHair Type   | Z3 Sort                                              |
++=============+==================+======================================================+
+| ``int``     | ``SymbolicInt``  | ``IntSort()``                                        |
++-------------+------------------+------------------------------------------------------+
+| ``bool``    | ``SymbolicBool`` | ``BoolSort()``                                       |
++-------------+------------------+------------------------------------------------------+
+| ``str``     | ``SymbolicStr``  | ``StringSort()``                                     |
++-------------+------------------+------------------------------------------------------+
+| ``dict``    | ``SymbolicDict`` | ``ArraySort(K, V)`` and ``IntSort()`` for the length |
++-------------+------------------+------------------------------------------------------+
 
 Let's Explore
 =============
 
+First, we need to create a context manager that manages a symbolic execution.
+Normally, you'd do this by saying ``with standalone_statespace:``, but since we're in
+an interactive terminal, we'll just open the context manually:
+
+    >>> from crosshair.libimpl.builtinslib import SymbolicInt
+    >>> from crosshair.core_and_libs import standalone_statespace
+    >>> space = standalone_statespace.__enter__()
+
 We can initialize a CrossHair object by giving it a name::
 
-    >>> from crosshair.libimpl.builtinslib import SmtInt
-
-    >>> crosshair_x = SmtInt('x')
+    >>> symbolic_x = SymbolicInt('x')
 
 We can access the ``.var`` attribute of any CrossHair object to get
 the Z3 variable(s) that it holds:
 
-    >>> crosshair_x.var
+    >>> symbolic_x.var
     x
-    >>> type(crosshair_x.var)
-    <class 'Z3.Z3.ArithRef'>
+    >>> type(symbolic_x.var)
+    <class 'z3.z3.ArithRef'>
 
 
 This takes the Z3 variable we just defined and adds one to it::
 
-    >>> import Z3
+    >>> import z3
 
-    >>> expr = crosshair_x.var + Z3.IntVal(1)
+    >>> expr = symbolic_x.var + z3.IntVal(1)
     >>> expr
     x + 1
     >>> type(expr)
-    <class 'Z3.Z3.ExprRef'>
+    <class 'z3.z3.ArithRef'>
 
 We can create CrossHair objects not only for fresh variables, but
 also for Z3 expressions.
 So, if we wanted to wrap ``x + 1`` back into a CrossHair object,
 we'd write::
 
-    >>> SmtInt(crosshair_x.var + Z3.IntVal(1))
+    >>> symbolic_x_incr = SymbolicInt(symbolic_x.var + z3.IntVal(1))
 
-The ``SmtInt`` class defines the ``__add__`` method so that you don't
-have to spell that out, though. You can just say ``crosshair_x + 1``, and
-``SmtInt`` does the necessary unwrapping and re-wrapping::
+The ``SymbolicInt`` class defines the ``__add__`` method so that you don't
+have to spell that out, though. You can just say ``symbolic_x + 1``, and
+``SymbolicInt`` does the necessary unwrapping and re-wrapping::
 
-    >>> type(crosshair_x + 1)
-    <class 'crosshair.libimpl.builtinslib.SmtInt'>
+    >>> type(symbolic_x + 1)
+    <class 'crosshair.libimpl.builtinslib.SymbolicInt'>
 
-``SmtInt`` also defines the comparison methods so that they return symbolic
+``SymbolicInt`` also defines the comparison methods so that they return symbolic
 booleans::
 
-    >>> type(crosshair_x >= 0)
-    <class 'crosshair.libimpl.builtinslib.SmtBool'>
+    >>> type(symbolic_x >= 0)
+    <class 'crosshair.libimpl.builtinslib.SymbolicBool'>
 
 The symbolic boolean holds an equivalent Z3 expression::
 
-    >>> (crosshair_x >= 0).var
+    >>> (symbolic_x >= 0).var
     0 <= x
 
 
 So far, everything is symbolic. But eventually, the Python interpreter
 needs a real value; consider::
 
-    if crosshair_x > 0:
+    if symbolic_x > 0:
         print('bigger than zero')
 
 Should this execute the print or not? When python executes the ``if``
-statement, it calls ``__bool__`` on the ``SmtBool`` object. This method
+statement, it calls ``__bool__`` on the ``SymbolicBool`` object. This method
 does something very special. It consults Z3:
 
 * If the Z3 boolean expression must be True (or False), just return
@@ -130,6 +139,9 @@ raised, or a postcondition to return False. When that happens,
 we ask Z3 for a model and report it as a counterexample.
 
 That's the core of how CrossHair works.
+
+.. testcleanup::
+  standalone_statespace.__exit__()
 
 
 Devil in the Details

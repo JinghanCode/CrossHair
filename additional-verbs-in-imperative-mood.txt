@@ -35,3 +35,7 @@ guard
 revise
 fork
 isolate
+redesign
+revert
+disable
+realize
