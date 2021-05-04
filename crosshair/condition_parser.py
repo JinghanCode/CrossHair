@@ -847,13 +847,13 @@ class HypothesisParser(ConcreteConditionParser):
         ):
             return None
 
-        try:
-            inner_test = fn.hypothesis.inner_test
-            inner_test_sig = inspect.signature(inner_test)
-        except AttributeError:
+        if not hasattr(fn, 'hypothesis'):
             return None
 
+        inner_test = fn.hypothesis.inner_test
+        inner_test_sig = inspect.signature(inner_test)
         given_kwargs = fn.hypothesis._given_kwargs
+
         filename, first_line, _lines = sourcelines(fn)
         namespace = fn_globals(inner_test)
 
@@ -946,8 +946,8 @@ class HypothesisParser(ConcreteConditionParser):
             if mapping_function is not None:
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
-                    expr_for_map = ""
-                    # TODO: mapping lambda functions is broken!!!
+                    lambda_source = hypothesis.internal.reflection.extract_lambda_source(mapping_function)
+                    expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
                 else:
                     namespace[mapping_function.__name__] = mapping_function
                     expr_for_map = (
@@ -1033,7 +1033,7 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     evaluate_fns = []
     or_expr_source = ""
     filename = ""
-    line = None
+    line = -1
     first = True
     for condition in conditions:
         evaluate_fns.append(condition.evaluate)
@@ -1062,7 +1062,7 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     evaluate_fns = []
     and_expr_source = ""
     filename = ""
-    line = None
+    line = -1
     first = True
     for condition in conditions:
         evaluate_fns.append(condition.evaluate)
