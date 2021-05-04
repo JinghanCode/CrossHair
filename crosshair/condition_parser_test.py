@@ -325,16 +325,16 @@ class AssertsParserTest(unittest.TestCase):
             nums = [3, 1, 1, 2]
             conditions.fn(nums)
 
+
 if hypothesis:
+
     @hypothesis.given()
     def test_hypothesis_basic(x):
         1 / (x - 117)
 
-
     @hypothesis.given(hypothesis.strategies.integers())
     def test_hypothesis_strategies(x):
         assert False
-
 
     class HypothesisParserTest(unittest.TestCase):
         def test_simple_parse(self) -> None:

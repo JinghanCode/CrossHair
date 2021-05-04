@@ -9,6 +9,7 @@ import sys
 import textwrap
 import traceback
 import types
+import copy
 from dataclasses import dataclass
 from dataclasses import replace
 from typing import *
@@ -816,6 +817,7 @@ class AssertsParser(ConcreteConditionParser):
 
 class HypothesisParser(ConcreteConditionParser):
     def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
+        self.uniq_id = 0
         fn_and_sig = ctxfn.get_callable()
         if fn_and_sig is None:
             return None
@@ -867,29 +869,36 @@ class HypothesisParser(ConcreteConditionParser):
     # TODO: Need to make sure that all symbols are unique. i.e. Currently can't have "x_" in the fn sig.
     # Solution is to keep a dictionary of all parameters and their associated symbols.
 
+    def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
+        return []
+
+    def get_id(self):
+        self.uniq_id += 1
+        return self.uniq_id
+
     def get_cond_from_strategy(
-        self,
-        variable,
-        strategy,
-        mapping_function: Optional[Callable],
-        filename,
-        first_line,
-        namespace,
+            self,
+            variable,
+            strategy,
+            mapping_function: Optional[Callable],
+            filename,
+            first_line,
+            namespace,
     ) -> List[ConditionExpr]:
 
         conditions = []
         strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(strategy)
 
         if isinstance(
-            strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
+                strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
         ):
             mapped_strategy = strategy.mapped_strategy
-            cur_mapping_function = strategy.pack
+            mapper = strategy.pack
 
             if mapping_function is not None:
-                mapping_function = compose(cur_mapping_function, mapping_function)
+                mapping_function = compose(mapper, mapping_function)
             else:
-                mapping_function = cur_mapping_function
+                mapping_function = mapper
             mapped_conditions = self.get_cond_from_strategy(
                 variable=variable,
                 strategy=mapped_strategy,
@@ -901,32 +910,43 @@ class HypothesisParser(ConcreteConditionParser):
             conditions.extend(mapped_conditions)
 
         if isinstance(
-            strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
+                strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
         ):
             strategy_list = strategy.original_strategies
-            conditions_to_or = []
+            or_targets = []
             for strategy in strategy_list:
-                conditions = self.get_cond_from_strategy(
+                strategy_conditions = self.get_cond_from_strategy(
                     variable, strategy, None, filename, first_line, namespace
                 )
-                conditions_to_or.append(and_conditions(conditions))
-            conditions.append(or_conditions(conditions_to_or))
+                or_targets.append(and_conditions(strategy_conditions))
+            conditions.append(or_conditions(or_targets))
 
         if isinstance(
-            strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
+                strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
         ):
             lower_bound = strategy.start
             upper_bound = strategy.end
 
             if mapping_function is not None:
-                variable_prime = f"{variable}_"
-                namespace[mapping_function.__name__] = mapping_function
+                variable_prime = f"{variable}_{self.get_id()}"
+                if mapping_function.__name__ == "<lambda>":
+                    def wrapped_lambda(*a, **kw):
+                        lambda_fn = mapping_function
+                        return lambda_fn(*a, **kw)
+                    namespace["test"] = wrapped_lambda
+                    expr_for_map = (
+                        f"{variable} == test({variable_prime})"
+                    )
+                else:
+                    namespace[mapping_function.__name__] = mapping_function
+                    expr_for_map = (
+                        f"{variable} == {mapping_function.__name__}({variable_prime})"
+                    )
+                if lower_bound is not None:
+                    lower_bound = mapping_function(lower_bound)
+                if upper_bound is not None:
+                    upper_bound = mapping_function(upper_bound)
 
-                lower_bound = mapping_function(lower_bound)
-                upper_bound = mapping_function(upper_bound)
-                expr_for_map = (
-                    f"{variable} == {mapping_function.__name__}({variable_prime})"
-                )
                 condition_expr_for_map = condition_from_source_text(
                     filename=filename,
                     line=first_line,
@@ -956,9 +976,6 @@ class HypothesisParser(ConcreteConditionParser):
             conditions.append(condition_expr)
 
         return conditions
-
-    def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
-        return []
 
 
 _PARSER_MAP = {

@@ -43,16 +43,14 @@ def test_integers_union(x):
     assert x <= 10
     assert x == 6
 
-def map_to_one(x):
-    return 
 
-@given(
-    st.one_of(
-        st.integers(1, 5), st.integers(9, 10)
-        )
-    )
+@given(st.one_of(st.integers(1, 5), st.integers(9, 10)))
 def test_integers_union_map(x):
     assert x >= 1
     assert x <= 10
-    assert x == 6 
+    assert x == 6
 
+
+@given(st.integers())
+def test_foo(x):
+    1 / (x - 117)
