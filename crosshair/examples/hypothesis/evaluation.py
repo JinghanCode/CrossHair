@@ -15,7 +15,11 @@ def test_multiple_strategies(x, y):
     1 / (x + y + 2300)
 
 
-@given(st.integers(2).map(lambda x: x - 1))
+def sub_one(x):
+    return x - 1
+
+
+@given(st.integers(2).map(sub_one))
 def test_map(x):
     assert x % 1098567819578 != 0
 
