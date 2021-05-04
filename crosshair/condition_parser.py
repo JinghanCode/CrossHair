@@ -930,13 +930,8 @@ class HypothesisParser(ConcreteConditionParser):
             if mapping_function is not None:
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
-                    def wrapped_lambda(*a, **kw):
-                        lambda_fn = mapping_function
-                        return lambda_fn(*a, **kw)
-                    namespace["test"] = wrapped_lambda
-                    expr_for_map = (
-                        f"{variable} == test({variable_prime})"
-                    )
+                    expr_for_map = ""
+                    # TODO: mapping lambda functions is broken!!!
                 else:
                     namespace[mapping_function.__name__] = mapping_function
                     expr_for_map = (
