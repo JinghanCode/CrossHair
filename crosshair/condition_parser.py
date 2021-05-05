@@ -882,9 +882,6 @@ class HypothesisParser(ConcreteConditionParser):
             fn_syntax_messages=[],
         )
 
-    # TODO: Need to make sure that all symbols are unique. i.e. Currently can't have "x_" in the fn sig.
-    # Solution is to keep a dictionary of all parameters and their associated symbols.
-
     def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
         return []
 
@@ -944,14 +941,18 @@ class HypothesisParser(ConcreteConditionParser):
             upper_bound = strategy.end
 
             if mapping_function is not None:
+                # TODO: Need to work out if get_id() is sufficient for ensuring unique free variables.
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
+                    # TODO: Investigate and test extract_lambda_source correctness for how we are using it here.
                     lambda_source = (
                         hypothesis.internal.reflection.extract_lambda_source(
                             mapping_function
                         )
                     )
+
                     expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
+                    print(expr_for_map)
                 else:
                     namespace[mapping_function.__name__] = mapping_function
                     expr_for_map = (
