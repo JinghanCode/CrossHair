@@ -53,3 +53,9 @@ def test_multi_map(x, y):
 def test_one_of_with_map(x):
     assert x % 2 == 0
     assert x % 2 == 1
+
+
+@given(st.one_of(st.integers().map(multiply_2)))
+def test_bar(x):
+    assert x % 2 == 0
+    assert x % 2 == 1

@@ -932,6 +932,7 @@ class HypothesisParser(ConcreteConditionParser):
                     variable, strategy, None, filename, first_line, namespace
                 )
                 or_targets.append(and_conditions(strategy_conditions))
+
             conditions.append(or_conditions(or_targets))
 
         if isinstance(
@@ -945,14 +946,19 @@ class HypothesisParser(ConcreteConditionParser):
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
                     # TODO: Investigate and test extract_lambda_source correctness for how we are using it here.
-                    lambda_source = (
-                        hypothesis.internal.reflection.extract_lambda_source(
-                            mapping_function
-                        )
-                    )
+                    # lambda_source = (
+                    #     hypothesis.internal.reflection.extract_lambda_source(
+                    #         mapping_function
+                    #     )
+                    # )
+                    #
+                    # expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
 
-                    expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
-                    print(expr_for_map)
+                    mapping_function.__name__= f"lambda_f{self.get_id()}"
+                    namespace[mapping_function.__name__] = mapping_function.__call__
+                    expr_for_map = (
+                        f"{variable} == {mapping_function.__name__}({variable_prime})"
+                    )
                 else:
                     namespace[mapping_function.__name__] = mapping_function
                     expr_for_map = (
@@ -1039,15 +1045,19 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     or_expr_source = ""
     filename = ""
     line = -1
+    addl_symbols = dict()
     first = True
     for condition in conditions:
+        if condition.addl_symbols is not None:
+            addl_symbols.update(condition.addl_symbols)
         evaluate_fns.append(condition.evaluate)
         if first:
+            first = False
             filename = condition.filename
             line = condition.line
-            or_expr_source += f"{condition.expr_source}"
+            or_expr_source += f"({condition.expr_source})"
         else:
-            or_expr_source += f" or {condition.expr_source}"
+            or_expr_source += f" or ({condition.expr_source})"
 
     def evaluate_logic_or(bindings: Mapping[str, object]) -> bool:
         for evaluate_fn in evaluate_fns:
@@ -1060,6 +1070,7 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         line=line,
         expr_source=or_expr_source,
         evaluate=evaluate_logic_or,
+        addl_symbols=addl_symbols
     )
 
 
@@ -1068,15 +1079,19 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     and_expr_source = ""
     filename = ""
     line = -1
+    addl_symbols = dict()
     first = True
     for condition in conditions:
+        if condition.addl_symbols is not None:
+            addl_symbols.update(condition.addl_symbols)
         evaluate_fns.append(condition.evaluate)
         if first:
+            first = False
             filename = condition.filename
             line = condition.line
-            and_expr_source += f"{condition.expr_source}"
+            and_expr_source += f"({condition.expr_source})"
         else:
-            and_expr_source += f" and {condition.expr_source}"
+            and_expr_source += f" and ({condition.expr_source})"
 
     def evaluate_logic_and(bindings: Mapping[str, object]) -> bool:
         for evaluate_fn in evaluate_fns:
@@ -1089,4 +1104,5 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         line=line,
         expr_source=and_expr_source,
         evaluate=evaluate_logic_and,
+        addl_symbols=addl_symbols
     )
