@@ -1270,8 +1270,8 @@ def attempt_call(
     lcls = {"__old__": AttributeHolder(lcls), **lcls}
     expected_exceptions = conditions.raises
     for precondition in conditions.pre:
-        if precondition.addl_symbols is not None:
-            for symbol, typ in precondition.addl_symbols.items():
+        if precondition.symbols is not None:
+            for symbol, typ in precondition.symbols.items():
                 smt_name = symbol + space.uniq()
                 lcls[symbol] = proxy_for_type(typ, smt_name)
         if not precondition.evaluate:

@@ -123,7 +123,7 @@ class ConditionExpr:
     expr_source: str
     addl_context: str = ""
     compile_err: Optional[ConditionSyntaxMessage] = None
-    addl_symbols: Optional[Mapping[str, type]] = None
+    symbols: Optional[Mapping[str, type]] = None
 
     def __repr__(self):
         return (
@@ -132,7 +132,7 @@ class ConditionExpr:
             f"expr_source={self.expr_source!r}, "
             f"addl_context={self.addl_context!r}, "
             f"compile_err={self.compile_err!r}), "
-            f"addl_symbols={self.addl_symbols!r})"
+            f"symbols={self.symbols!r})"
         )
 
 
@@ -975,7 +975,7 @@ class HypothesisParser(ConcreteConditionParser):
                     expr_source=expr_for_map,
                     namespace=namespace,
                 )
-                condition_expr_for_map.addl_symbols = {variable_prime: int}
+                condition_expr_for_map.symbols = {variable_prime: int}
                 conditions.append(condition_expr_for_map)
 
             expr = f"isinstance({variable}, int)"
@@ -1045,11 +1045,11 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     or_expr_source = ""
     filename = ""
     line = -1
-    addl_symbols = dict()
+    symbols = dict()
     first = True
     for condition in conditions:
-        if condition.addl_symbols is not None:
-            addl_symbols.update(condition.addl_symbols)
+        if condition.symbols is not None:
+            symbols.update(condition.symbols)
         evaluate_fns.append(condition.evaluate)
         if first:
             first = False
@@ -1070,7 +1070,7 @@ def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         line=line,
         expr_source=or_expr_source,
         evaluate=evaluate_logic_or,
-        addl_symbols=addl_symbols
+        symbols=symbols
     )
 
 
@@ -1079,11 +1079,11 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
     and_expr_source = ""
     filename = ""
     line = -1
-    addl_symbols = dict()
+    symbols = dict()
     first = True
     for condition in conditions:
-        if condition.addl_symbols is not None:
-            addl_symbols.update(condition.addl_symbols)
+        if condition.symbols is not None:
+            symbols.update(condition.symbols)
         evaluate_fns.append(condition.evaluate)
         if first:
             first = False
@@ -1104,5 +1104,5 @@ def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
         line=line,
         expr_source=and_expr_source,
         evaluate=evaluate_logic_and,
-        addl_symbols=addl_symbols
+        symbols=symbols
     )
