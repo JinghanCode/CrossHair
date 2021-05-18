@@ -154,7 +154,12 @@ def command_line_parser() -> argparse.ArgumentParser:
             "--analysis_kind",
             type=analysis_kind,
             metavar="KIND",
-            default=(AnalysisKind.PEP316, AnalysisKind.icontract, AnalysisKind.asserts),
+            default=(
+                AnalysisKind.PEP316,
+                AnalysisKind.icontract,
+                AnalysisKind.hypothesis,
+                AnalysisKind.asserts,
+            ),
             help=textwrap.dedent(
                 """\
             Kind of contract to check. By default, all kinds are checked.

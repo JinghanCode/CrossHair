@@ -47,6 +47,7 @@ from crosshair.condition_parser import AssertsParser
 from crosshair.condition_parser import ConditionParser
 from crosshair.condition_parser import Pep316Parser
 from crosshair.condition_parser import IcontractParser
+from crosshair.condition_parser import HypothesisParser
 from crosshair.condition_parser import resolve_signature
 from crosshair.condition_parser import Conditions
 from crosshair.condition_parser import ConditionExpr
@@ -1212,6 +1213,12 @@ class MessageGenerator:
             self.filename = code_obj.co_filename
             self.start_lineno = code_obj.co_firstlineno
             _, _, lines = sourcelines(fn)
+            # TODO: Sourcelines is failing to get source for tests with lambda in strategy for hypothesis.
+            # Temporary workaround for correctly reporting errors for hypothesis tests.
+            if (lines[0][0:6] == "@given"):
+                self.is_hypothesis_test = True
+            else:
+                self.is_hypothesis_test = False
             self.end_lineno = self.start_lineno + len(lines)
 
     def make(
@@ -1226,7 +1233,7 @@ class MessageGenerator:
             suggested_filename is not None
             and (os.path.abspath(suggested_filename) == os.path.abspath(self.filename))
             and (self.start_lineno <= suggested_lineno <= self.end_lineno)
-        ):
+        ) or self.is_hypothesis_test:
             return AnalysisMessage(
                 message_type, detail, suggested_filename, suggested_lineno, 0, tb
             )
@@ -1269,6 +1276,10 @@ def attempt_call(
     lcls = {"__old__": AttributeHolder(lcls), **lcls}
     expected_exceptions = conditions.raises
     for precondition in conditions.pre:
+        if precondition.symbols is not None:
+            for symbol, typ in precondition.symbols.items():
+                smt_name = symbol + space.uniq()
+                lcls[symbol] = proxy_for_type(typ, smt_name)
         if not precondition.evaluate:
             continue
         with ExceptionFilter(expected_exceptions) as efilter:

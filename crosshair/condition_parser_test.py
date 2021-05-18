@@ -7,6 +7,11 @@ try:
 except:
     icontract = None  # type: ignore
 
+try:
+    import hypothesis
+except:
+    hypothesis = None
+
 from crosshair.condition_parser import *
 from crosshair.fnutil import FunctionInfo
 from crosshair.util import set_debug
@@ -316,6 +321,23 @@ class AssertsParserTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             nums = [3, 1, 1, 2]
             conditions.fn(nums)
+
+
+if hypothesis:
+
+    @hypothesis.given()
+    def test_hypothesis_basic(x):
+        1 / (x - 117)
+
+    @hypothesis.given(hypothesis.strategies.integers())
+    def test_hypothesis_strategies(x):
+        assert False
+
+    class HypothesisParserTest(unittest.TestCase):
+        def test_simple_parse(self) -> None:
+            conditions = HypothesisParser().get_fn_conditions(
+                FunctionInfo.from_fn(test_hypothesis_basic)
+            )
 
 
 def test_CompositeConditionParser():

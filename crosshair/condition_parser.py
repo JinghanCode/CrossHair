@@ -9,7 +9,7 @@ import sys
 import textwrap
 import traceback
 import types
-import typing
+import copy
 from dataclasses import dataclass
 from dataclasses import replace
 from typing import *
@@ -18,6 +18,13 @@ try:
     import icontract
 except ModuleNotFoundError:
     icontract = None  # type: ignore
+
+try:
+    import hypothesis
+    import hypothesis.errors
+    from hypothesis.strategies import SearchStrategy
+except ModuleNotFoundError:
+    hypothesis = None  # type: ignore
 
 from crosshair.fnutil import fn_globals
 from crosshair.fnutil import resolve_signature
@@ -116,6 +123,7 @@ class ConditionExpr:
     expr_source: str
     addl_context: str = ""
     compile_err: Optional[ConditionSyntaxMessage] = None
+    symbols: Optional[Mapping[str, type]] = None
 
     def __repr__(self):
         return (
@@ -123,7 +131,8 @@ class ConditionExpr:
             f"line={self.line!r}, "
             f"expr_source={self.expr_source!r}, "
             f"addl_context={self.addl_context!r}, "
-            f"compile_err={self.compile_err!r})"
+            f"compile_err={self.compile_err!r}), "
+            f"symbols={self.symbols!r})"
         )
 
 
@@ -161,7 +170,7 @@ class Conditions:
 
     sig: inspect.Signature
     """
-    The signature of the funtion. Argument and return type
+    The signature of the function. Argument and return type
     annotations should be resolved to real python types when possible.
     """
 
@@ -822,9 +831,170 @@ class AssertsParser(ConcreteConditionParser):
         return []
 
 
+class HypothesisParser(ConcreteConditionParser):
+    def get_fn_conditions(self, ctxfn: FunctionInfo) -> Optional[Conditions]:
+        self.uniq_id = 0
+        fn_and_sig = ctxfn.get_callable()
+        if fn_and_sig is None:
+            return None
+        (fn, _) = fn_and_sig
+
+        # TODO replace this guard with package-level configuration?
+        if (
+            getattr(fn, "__module__", False)
+            and fn.__module__.startswith("crosshair.")
+            and not fn.__module__.endswith("_test")
+        ):
+            return None
+
+        if not hasattr(fn, "hypothesis"):
+            return None
+
+        inner_test = fn.hypothesis.inner_test
+        inner_test_sig = inspect.signature(inner_test)
+        given_kwargs = fn.hypothesis._given_kwargs
+
+        filename, first_line, _lines = sourcelines(fn)
+        namespace = fn_globals(inner_test)
+
+        pre: List[ConditionExpr] = []
+        post = [ConditionExpr(lambda _: True, filename, first_line, "")]
+
+        for variable, wrapped_strategy in given_kwargs.items():
+            conds = self.get_cond_from_strategy(
+                variable=variable,
+                strategy=wrapped_strategy,
+                mapping_function=None,
+                filename=filename,
+                first_line=first_line,
+                namespace=namespace,
+            )
+            pre.extend(conds)
+
+        return Conditions(
+            fn=inner_test,
+            src_fn=inner_test,
+            pre=pre,  # (pre)
+            post=post,
+            raises=frozenset([hypothesis.errors.UnsatisfiedAssumption]),
+            sig=inner_test_sig,
+            mutable_args=None,
+            fn_syntax_messages=[],
+        )
+
+    def get_class_invariants(self, cls: type) -> List[ConditionExpr]:
+        return []
+
+    def get_id(self):
+        self.uniq_id += 1
+        return self.uniq_id
+
+    def get_cond_from_strategy(
+        self,
+        variable,
+        strategy,
+        mapping_function: Optional[Callable],
+        filename,
+        first_line,
+        namespace,
+    ) -> List[ConditionExpr]:
+
+        conditions = []
+        strategy = hypothesis.strategies._internal.lazy.unwrap_strategies(strategy)
+
+        if isinstance(
+            strategy, hypothesis.strategies._internal.strategies.MappedSearchStrategy
+        ):
+            mapped_strategy = strategy.mapped_strategy
+            mapper = strategy.pack
+
+            if mapping_function is not None:
+                mapping_function = compose(mapper, mapping_function)
+            else:
+                mapping_function = mapper
+            mapped_conditions = self.get_cond_from_strategy(
+                variable=variable,
+                strategy=mapped_strategy,
+                mapping_function=mapping_function,
+                filename=filename,
+                first_line=first_line,
+                namespace=namespace,
+            )
+            conditions.extend(mapped_conditions)
+
+        if isinstance(
+            strategy, hypothesis.strategies._internal.strategies.OneOfStrategy
+        ):
+            strategy_list = strategy.original_strategies
+            or_targets = []
+            for strategy in strategy_list:
+                strategy_conditions = self.get_cond_from_strategy(
+                    variable, strategy, None, filename, first_line, namespace
+                )
+                or_targets.append(and_conditions(strategy_conditions))
+
+            conditions.append(or_conditions(or_targets))
+
+        if isinstance(
+            strategy, hypothesis.strategies._internal.numbers.IntegersStrategy
+        ):
+            lower_bound = strategy.start
+            upper_bound = strategy.end
+
+            if mapping_function is not None:
+                # TODO: Need to work out if get_id() is sufficient for ensuring unique free variables.
+                variable_prime = f"{variable}_{self.get_id()}"
+                if mapping_function.__name__ == "<lambda>":
+                    mapping_function.__name__= f"lambda_f{self.get_id()}"
+                    namespace[mapping_function.__name__] = mapping_function.__call__
+                    expr_for_map = (
+                        f"{variable} == {mapping_function.__name__}({variable_prime})"
+                    )
+                else:
+                    namespace[mapping_function.__name__] = mapping_function
+                    expr_for_map = (
+                        f"{variable} == {mapping_function.__name__}({variable_prime})"
+                    )
+                if lower_bound is not None:
+                    lower_bound = mapping_function(lower_bound)
+                if upper_bound is not None:
+                    upper_bound = mapping_function(upper_bound)
+
+                condition_expr_for_map = condition_from_source_text(
+                    filename=filename,
+                    line=first_line,
+                    expr_source=expr_for_map,
+                    namespace=namespace,
+                )
+                condition_expr_for_map.symbols = {variable_prime: int}
+                conditions.append(condition_expr_for_map)
+
+            expr = f"isinstance({variable}, int)"
+
+            if lower_bound is not None and upper_bound is not None:
+                expr = f"({lower_bound} <= {variable} <= {upper_bound})"
+
+            elif lower_bound is not None:
+                expr = f"({lower_bound} <= {variable})"
+
+            elif upper_bound is not None:
+                expr = f"({variable} <= {upper_bound})"
+
+            condition_expr = condition_from_source_text(
+                filename=filename,
+                line=first_line,
+                expr_source=expr,
+                namespace=namespace,
+            )
+            conditions.append(condition_expr)
+
+        return conditions
+
+
 _PARSER_MAP = {
     AnalysisKind.PEP316: Pep316Parser,
     AnalysisKind.icontract: IcontractParser,
+    AnalysisKind.hypothesis: HypothesisParser,
     AnalysisKind.asserts: AssertsParser,
 }
 
@@ -850,3 +1020,80 @@ def condition_parser(
 
 def get_current_parser() -> ConditionParser:
     return _CALLTREE_PARSER.get()
+
+
+# Helper for Hypothesis Parser
+def compose(g, f):
+    def h(*args, **kwargs):
+        return g(f(*args, **kwargs))
+
+    h.__name__ = f"{g.__name__}_composite_{f.__name__}"
+    return h
+
+
+def or_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
+    evaluate_fns = []
+    or_expr_source = ""
+    filename = ""
+    line = -1
+    symbols = dict()
+    first = True
+    for condition in conditions:
+        if condition.symbols is not None:
+            symbols.update(condition.symbols)
+        evaluate_fns.append(condition.evaluate)
+        if first:
+            first = False
+            filename = condition.filename
+            line = condition.line
+            or_expr_source += f"({condition.expr_source})"
+        else:
+            or_expr_source += f" or ({condition.expr_source})"
+
+    def evaluate_logic_or(bindings: Mapping[str, object]) -> bool:
+        for evaluate_fn in evaluate_fns:
+            if evaluate_fn(bindings):
+                return True
+        return False
+
+    return ConditionExpr(
+        filename=filename,
+        line=line,
+        expr_source=or_expr_source,
+        evaluate=evaluate_logic_or,
+        symbols=symbols
+    )
+
+
+def and_conditions(conditions: List[ConditionExpr]) -> ConditionExpr:
+    evaluate_fns = []
+    and_expr_source = ""
+    filename = ""
+    line = -1
+    symbols = dict()
+    first = True
+    for condition in conditions:
+        if condition.symbols is not None:
+            symbols.update(condition.symbols)
+        evaluate_fns.append(condition.evaluate)
+        if first:
+            first = False
+            filename = condition.filename
+            line = condition.line
+            and_expr_source += f"({condition.expr_source})"
+        else:
+            and_expr_source += f" and ({condition.expr_source})"
+
+    def evaluate_logic_and(bindings: Mapping[str, object]) -> bool:
+        for evaluate_fn in evaluate_fns:
+            if not evaluate_fn(bindings):
+                return False
+        return True
+
+    return ConditionExpr(
+        filename=filename,
+        line=line,
+        expr_source=and_expr_source,
+        evaluate=evaluate_logic_and,
+        symbols=symbols
+    )
