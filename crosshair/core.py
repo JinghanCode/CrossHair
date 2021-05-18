@@ -1213,6 +1213,12 @@ class MessageGenerator:
             self.filename = code_obj.co_filename
             self.start_lineno = code_obj.co_firstlineno
             _, _, lines = sourcelines(fn)
+            # TODO: Sourcelines is failing to get source for tests with lambda in strategy for hypothesis.
+            # Temporary workaround for correctly reporting errors for hypothesis tests.
+            if (lines[0][0:6] == "@given"):
+                self.is_hypothesis_test = True
+            else:
+                self.is_hypothesis_test = False
             self.end_lineno = self.start_lineno + len(lines)
 
     def make(
@@ -1227,7 +1233,7 @@ class MessageGenerator:
             suggested_filename is not None
             and (os.path.abspath(suggested_filename) == os.path.abspath(self.filename))
             and (self.start_lineno <= suggested_lineno <= self.end_lineno)
-        ):
+        ) or self.is_hypothesis_test:
             return AnalysisMessage(
                 message_type, detail, suggested_filename, suggested_lineno, 0, tb
             )

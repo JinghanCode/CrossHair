@@ -945,15 +945,6 @@ class HypothesisParser(ConcreteConditionParser):
                 # TODO: Need to work out if get_id() is sufficient for ensuring unique free variables.
                 variable_prime = f"{variable}_{self.get_id()}"
                 if mapping_function.__name__ == "<lambda>":
-                    # TODO: Investigate and test extract_lambda_source correctness for how we are using it here.
-                    # lambda_source = (
-                    #     hypothesis.internal.reflection.extract_lambda_source(
-                    #         mapping_function
-                    #     )
-                    # )
-                    #
-                    # expr_for_map = f"{variable} == ({lambda_source})({variable_prime})"
-
                     mapping_function.__name__= f"lambda_f{self.get_id()}"
                     namespace[mapping_function.__name__] = mapping_function.__call__
                     expr_for_map = (
